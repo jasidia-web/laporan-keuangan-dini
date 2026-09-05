@@ -16,19 +16,102 @@
    to "just a webpage" when opened as a local file. */
 (function(){
   try{
-    var iconSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192"><rect width="192" height="192" rx="36" fill="#123B82"/><rect x="40" y="96" width="24" height="56" fill="#ffffff"/><rect x="84" y="64" width="24" height="88" fill="#17A2B8"/><rect x="128" y="40" width="24" height="112" fill="#ffffff"/></svg>';
-    var iconData = 'data:image/svg+xml;base64,' + btoa(iconSvg);
+    // Draw an elegant "financial growth" logo on a canvas so we get a real
+    // PNG (better Android/adaptive-icon support than an SVG data URI), and
+    // reuse the exact same image on the login screen for consistent branding.
+    function roundedPath(ctx,x,y,w,h,r){
+      if(typeof r==='number') r={tl:r,tr:r,br:r,bl:r};
+      ctx.beginPath();
+      ctx.moveTo(x+r.tl,y);
+      ctx.lineTo(x+w-r.tr,y);
+      ctx.arcTo(x+w,y,x+w,y+r.tr,r.tr);
+      ctx.lineTo(x+w,y+h-r.br);
+      ctx.arcTo(x+w,y+h,x+w-r.br,y+h,r.br);
+      ctx.lineTo(x+r.bl,y+h);
+      ctx.arcTo(x,y+h,x,y+h-r.bl,r.bl);
+      ctx.lineTo(x,y+r.tl);
+      ctx.arcTo(x,y,x+r.tl,y,r.tl);
+      ctx.closePath();
+    }
+    function drawLogo(size){
+      var canvas = document.createElement('canvas');
+      canvas.width = size; canvas.height = size;
+      var ctx = canvas.getContext('2d');
+      var r = size*0.22;
+
+      // background gradient (navy -> deep blue -> teal)
+      roundedPath(ctx,0,0,size,size,r);
+      var bg = ctx.createLinearGradient(0,0,size,size);
+      bg.addColorStop(0,'#0A2A63');
+      bg.addColorStop(0.55,'#123B82');
+      bg.addColorStop(1,'#12879C');
+      ctx.fillStyle = bg;
+      ctx.fill();
+
+      // soft inner highlight, clipped to the rounded shape
+      ctx.save();
+      roundedPath(ctx,0,0,size,size,r);
+      ctx.clip();
+      var hl = ctx.createRadialGradient(size*0.30,size*0.24,0,size*0.30,size*0.24,size*0.75);
+      hl.addColorStop(0,'rgba(255,255,255,0.20)');
+      hl.addColorStop(1,'rgba(255,255,255,0)');
+      ctx.fillStyle = hl;
+      ctx.fillRect(0,0,size,size);
+      // thin inner border for a refined, premium edge
+      ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+      ctx.lineWidth = size*0.02;
+      roundedPath(ctx, size*0.01, size*0.01, size*0.98, size*0.98, r*0.95);
+      ctx.stroke();
+      ctx.restore();
+
+      // ascending bars (white, rounded tops)
+      var baseY = size*0.735;
+      var barW = size*0.115;
+      var gap = size*0.055;
+      var heights = [0.28, 0.44, 0.60];
+      var startX = size*0.255;
+      ctx.fillStyle = '#FFFFFF';
+      var tops = [];
+      heights.forEach(function(hr,i){
+        var x = startX + i*(barW+gap);
+        var h = size*hr;
+        roundedPath(ctx, x, baseY-h, barW, h, {tl:barW*0.35,tr:barW*0.35,br:0,bl:0});
+        ctx.fill();
+        tops.push({x:x+barW/2, y:baseY-h});
+      });
+
+      // gold rising trend line + marker dot, arcing above the bars
+      ctx.strokeStyle = '#F0B93E';
+      ctx.lineWidth = size*0.024;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(tops[0].x, tops[0].y - size*0.05);
+      ctx.quadraticCurveTo(size*0.52, size*0.16, tops[2].x + size*0.06, tops[2].y - size*0.07);
+      ctx.stroke();
+      ctx.fillStyle = '#F0B93E';
+      ctx.beginPath();
+      ctx.arc(tops[2].x + size*0.06, tops[2].y - size*0.07, size*0.038, 0, Math.PI*2);
+      ctx.fill();
+
+      return canvas.toDataURL('image/png');
+    }
+
+    var icon192 = drawLogo(192);
+    var icon512 = drawLogo(512);
+    window.__appIcon = icon512; // used by the login screen for matching branding
+
     var manifest = {
       name: 'Laporan Keuangan Dini',
       short_name: 'Buku Kas',
       description: 'Aplikasi laporan Laba Rugi dan Neraca',
       start_url: '.',
       display: 'standalone',
-      background_color: '#0F1E30',
+      background_color: '#0A2A63',
       theme_color: '#123B82',
       icons: [
-        {src: iconData, sizes:'192x192', type:'image/svg+xml', purpose:'any'},
-        {src: iconData, sizes:'512x512', type:'image/svg+xml', purpose:'any'}
+        {src: icon192, sizes:'192x192', type:'image/png', purpose:'any'},
+        {src: icon512, sizes:'512x512', type:'image/png', purpose:'any'},
+        {src: icon512, sizes:'512x512', type:'image/png', purpose:'maskable'}
       ]
     };
     var manifestBlob = new Blob([JSON.stringify(manifest)], {type:'application/manifest+json'});
@@ -49,8 +132,13 @@
 
     var appleIcon = document.createElement('link');
     appleIcon.rel = 'apple-touch-icon';
-    appleIcon.href = iconData;
+    appleIcon.href = icon192;
     document.head.appendChild(appleIcon);
+
+    var favicon = document.createElement('link');
+    favicon.rel = 'icon';
+    favicon.href = icon192;
+    document.head.appendChild(favicon);
 
     if('serviceWorker' in navigator && location.protocol.indexOf('http')===0){
       var swCode = "self.addEventListener('install',e=>self.skipWaiting());"
@@ -135,6 +223,10 @@
   .topline{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:22px;}
   .topline h1{font-size:23px;}
   .topline .desc{color:var(--ink-soft);font-size:13px;margin-top:4px;}
+  .sticky-head{
+    position:sticky;top:0;z-index:15;background:var(--paper);
+    padding:14px 0 16px;margin:-14px 0 8px;border-bottom:1px solid var(--line);
+  }
 
   .controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
   select, .btn, input[type=text], input[type=number]{
@@ -315,11 +407,11 @@
     background:linear-gradient(90deg,var(--forest),var(--accent2));
   }
   .login-badge{
-    width:52px;height:52px;border-radius:14px;color:#fff;
-    background:linear-gradient(135deg,var(--forest),var(--accent2));
+    width:68px;height:68px;border-radius:16px;color:#fff;
     display:flex;align-items:center;justify-content:center;margin:0 auto 16px;
-    box-shadow:0 8px 20px rgba(18,59,130,.28);
+    box-shadow:0 10px 24px rgba(10,42,99,.35);overflow:hidden;
   }
+  .login-badge img{width:100%;height:100%;display:block;object-fit:cover;}
   .login-title{text-align:center;font-family:'Source Serif 4',serif;font-size:23px;font-weight:600;color:var(--ink);}
   .login-sub{text-align:center;font-size:12.5px;color:var(--ink-faint);margin-top:6px;line-height:1.6;}
   .login-form{margin-top:26px;display:flex;flex-direction:column;gap:13px;}
@@ -427,14 +519,51 @@ async function sha256Hex(text){
   }
   return h1.toString(16).padStart(8,'0') + h2.toString(16).padStart(8,'0');
 }
-async function loadAuth(){
+async function loadAuthList(){
   const raw = localGet(AUTH_KEY);
-  if(!raw) return null;
-  try{ return JSON.parse(raw); }catch(e){ return null; }
+  if(!raw) return [];
+  try{
+    const parsed = JSON.parse(raw);
+    if(Array.isArray(parsed)) return parsed;
+    if(parsed && parsed.username && parsed.hash) return [parsed]; // migrate old single-account format
+    return [];
+  }catch(e){ return []; }
 }
-async function saveAuth(username, password){
+async function saveAuthList(list){
+  return localSet(AUTH_KEY, JSON.stringify(list));
+}
+async function addAuthUser(username, password){
+  const list = await loadAuthList();
+  if(list.some(u=>u.username.toLowerCase()===username.toLowerCase())) return {ok:false, reason:'duplicate'};
   const hash = await sha256Hex(password);
-  return localSet(AUTH_KEY, JSON.stringify({username, hash}));
+  list.push({username, hash});
+  await saveAuthList(list);
+  return {ok:true};
+}
+async function removeAuthUser(username){
+  const list = await loadAuthList();
+  const next = list.filter(u=>u.username.toLowerCase()!==username.toLowerCase());
+  await saveAuthList(next);
+  return next;
+}
+async function findAuthUser(username, password){
+  const list = await loadAuthList();
+  const hash = await sha256Hex(password);
+  return list.find(u=>u.username.toLowerCase()===username.toLowerCase() && u.hash===hash) || null;
+}
+async function updateAuthUser(oldUsername, currentPassword, newUsername, newPassword){
+  const list = await loadAuthList();
+  const idx = list.findIndex(u=>u.username.toLowerCase()===oldUsername.toLowerCase());
+  if(idx===-1) return {ok:false, reason:'notfound'};
+  const curHash = await sha256Hex(currentPassword);
+  if(list[idx].hash !== curHash) return {ok:false, reason:'wrongpassword'};
+  if(newUsername.toLowerCase()!==oldUsername.toLowerCase() && list.some((u,i)=> i!==idx && u.username.toLowerCase()===newUsername.toLowerCase())){
+    return {ok:false, reason:'duplicate'};
+  }
+  list[idx].username = newUsername;
+  if(newPassword) list[idx].hash = await sha256Hex(newPassword);
+  await saveAuthList(list);
+  return {ok:true, username:newUsername};
 }
 
 let state = null;      // { accounts:[{id,name,kind}], values:{ [id]: { [year]: [12 numbers] } } }
@@ -614,6 +743,7 @@ const ICONS = {
   lock:'<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="1.5"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
   logout:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
   print:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>',
+  user:'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>',
 };
 
 /* =========================================================
@@ -993,15 +1123,17 @@ function viewLabaRugi(){
   }
 
   main.innerHTML = `
-    <div class="topline">
-      <div><h1>Laporan Laba Rugi</h1><div class="desc">Dihasilkan otomatis dari data akun</div></div>
-      ${reportControls()}
-    </div>
+    <div class="sticky-head">
+      <div class="topline" style="margin-bottom:14px;">
+        <div><h1>Laporan Laba Rugi</h1><div class="desc">Dihasilkan otomatis dari data akun</div></div>
+        ${reportControls()}
+      </div>
 
-    <div class="controls no-print" style="margin-bottom:16px;">
-      <button class="btn primary" id="btn-lr-export">${ICONS.download} Export Excel</button>
-      <button class="btn" id="btn-lr-pdf">${ICONS.doc} Simpan sebagai PDF</button>
-      <button class="btn" id="btn-lr-print">${ICONS.print} Cetak</button>
+      <div class="controls no-print" style="margin-bottom:0;">
+        <button class="btn primary" id="btn-lr-export">${ICONS.download} Export Excel</button>
+        <button class="btn" id="btn-lr-pdf">${ICONS.doc} Simpan sebagai PDF</button>
+        <button class="btn" id="btn-lr-print">${ICONS.print} Cetak</button>
+      </div>
     </div>
 
     <div class="panel report">
@@ -1063,15 +1195,17 @@ function viewNeraca(){
   }
 
   main.innerHTML = `
-    <div class="topline">
-      <div><h1>Neraca</h1><div class="desc">Posisi keuangan pada periode terpilih</div></div>
-      ${reportControls()}
-    </div>
+    <div class="sticky-head">
+      <div class="topline" style="margin-bottom:14px;">
+        <div><h1>Neraca</h1><div class="desc">Posisi keuangan pada periode terpilih</div></div>
+        ${reportControls()}
+      </div>
 
-    <div class="controls no-print" style="margin-bottom:16px;">
-      <button class="btn primary" id="btn-neraca-export">${ICONS.download} Export Excel</button>
-      <button class="btn" id="btn-neraca-pdf">${ICONS.doc} Simpan sebagai PDF</button>
-      <button class="btn" id="btn-neraca-print">${ICONS.print} Cetak</button>
+      <div class="controls no-print" style="margin-bottom:0;">
+        <button class="btn primary" id="btn-neraca-export">${ICONS.download} Export Excel</button>
+        <button class="btn" id="btn-neraca-pdf">${ICONS.doc} Simpan sebagai PDF</button>
+        <button class="btn" id="btn-neraca-print">${ICONS.print} Cetak</button>
+      </div>
     </div>
 
     <div class="panel report" style="max-width:760px;">
@@ -1107,11 +1241,14 @@ function viewNeraca(){
 /* =========================================================
    VIEW: IMPORT / EXPORT
    ========================================================= */
-function viewIO(){
+async function viewIO(){
   const main = document.getElementById('main');
+  const users = await loadAuthList();
   main.innerHTML = `
-    <div class="topline">
-      <div><h1>Import / Export</h1><div class="desc">Pindahkan data ke/dari file Excel</div></div>
+    <div class="sticky-head">
+      <div class="topline" style="margin-bottom:0;">
+        <div><h1>Import / Export</h1><div class="desc">Pindahkan data ke/dari file Excel</div></div>
+      </div>
     </div>
 
     <div class="panel">
@@ -1132,6 +1269,26 @@ function viewIO(){
     </div>
 
     <div class="panel">
+      <h2>Kelola Pengguna Login</h2>
+      <p style="color:var(--ink-soft);font-size:13px;margin:0 0 14px;">Tambahkan akun untuk rekan Anda supaya bisa masuk ke aplikasi ini juga, dengan username &amp; kata sandi masing-masing.</p>
+      <div id="user-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;">
+        ${users.map(u=>{
+          const isMe = session.username && session.username.toLowerCase()===u.username.toLowerCase();
+          return `
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--paper-dim);border-radius:8px;">
+            <span style="font-weight:600;display:flex;align-items:center;gap:8px;">${ICONS.user} ${escapeHtml(u.username)}${isMe ? ' <span style="font-weight:500;color:var(--ink-faint);font-size:12px;">(sedang masuk)</span>' : ''}</span>
+            <span style="display:flex;gap:4px;">
+              ${isMe ? `<button class="btn ghost" data-action="edit-self" title="Ubah username / kata sandi saya">${ICONS.edit}</button>` : ''}
+              ${users.length>1 && !isMe ? `<button class="btn ghost" data-action="del-user" data-username="${escapeHtml(u.username)}" title="Hapus pengguna">${ICONS.trash}</button>` : ''}
+            </span>
+          </div>
+        `;}).join('')}
+      </div>
+      <div id="adduser-slot"></div>
+      <button class="btn primary" id="btn-add-user">${ICONS.plus} Tambah Pengguna</button>
+    </div>
+
+    <div class="panel">
       <h2>Hapus Semua Data</h2>
       <p style="color:var(--ink-soft);font-size:13px;margin:0 0 14px;">Mengosongkan seluruh akun dan nilai. Tindakan ini tidak dapat dibatalkan.</p>
       <button class="btn danger" id="btn-clear-all">${ICONS.trash} Hapus Semua Data</button>
@@ -1141,6 +1298,122 @@ function viewIO(){
   document.getElementById('btn-export-xlsx').addEventListener('click', exportXlsx);
   document.getElementById('file-import').addEventListener('change', handleImportXlsx);
   document.getElementById('btn-clear-all').addEventListener('click', confirmClearAll);
+  document.getElementById('btn-add-user').addEventListener('click', showAddUserForm);
+  main.querySelectorAll('[data-action="del-user"]').forEach(b=>{
+    b.addEventListener('click', ()=> confirmDeleteUser(b.dataset.username));
+  });
+  const editSelfBtn = main.querySelector('[data-action="edit-self"]');
+  if(editSelfBtn) editSelfBtn.addEventListener('click', showEditSelfForm);
+}
+
+function showEditSelfForm(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-bg';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>Ubah Username / Kata Sandi Saya</h3>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div class="login-error" id="es-err"></div>
+        <div>
+          <label style="font-size:11.5px;font-weight:600;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.03em;">Username Baru</label>
+          <input type="text" id="es-user" value="${escapeHtml(session.username||'')}" style="width:100%;padding:9px 10px;border:1px solid var(--line-strong);border-radius:6px;margin-top:5px;">
+        </div>
+        <div>
+          <label style="font-size:11.5px;font-weight:600;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.03em;">Kata Sandi Baru (kosongkan jika tidak ganti)</label>
+          <input type="password" id="es-newpass" placeholder="Kata sandi baru" style="width:100%;padding:9px 10px;border:1px solid var(--line-strong);border-radius:6px;margin-top:5px;">
+        </div>
+        <div>
+          <label style="font-size:11.5px;font-weight:600;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.03em;">Kata Sandi Saat Ini (wajib, untuk konfirmasi)</label>
+          <input type="password" id="es-curpass" placeholder="Kata sandi Anda sekarang" style="width:100%;padding:9px 10px;border:1px solid var(--line-strong);border-radius:6px;margin-top:5px;">
+        </div>
+      </div>
+      <div class="row-actions">
+        <button class="btn ghost" id="es-cancel">Batal</button>
+        <button class="btn primary" id="es-save">Simpan</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#es-cancel').addEventListener('click', ()=> overlay.remove());
+  overlay.addEventListener('click', (e)=>{ if(e.target===overlay) overlay.remove(); });
+  overlay.querySelector('#es-save').addEventListener('click', async ()=>{
+    const errEl = overlay.querySelector('#es-err');
+    const newUser = overlay.querySelector('#es-user').value.trim();
+    const newPass = overlay.querySelector('#es-newpass').value;
+    const curPass = overlay.querySelector('#es-curpass').value;
+    if(!newUser){ errEl.textContent='Username tidak boleh kosong.'; errEl.classList.add('show'); return; }
+    if(newPass && newPass.length<4){ errEl.textContent='Kata sandi baru minimal 4 karakter.'; errEl.classList.add('show'); return; }
+    if(!curPass){ errEl.textContent='Masukkan kata sandi Anda saat ini untuk konfirmasi.'; errEl.classList.add('show'); return; }
+    const result = await updateAuthUser(session.username, curPass, newUser, newPass || null);
+    if(!result.ok){
+      errEl.textContent = result.reason==='wrongpassword' ? 'Kata sandi saat ini salah.'
+        : result.reason==='duplicate' ? 'Username itu sudah dipakai pengguna lain.'
+        : 'Gagal menyimpan perubahan.';
+      errEl.classList.add('show');
+      return;
+    }
+    session.username = result.username;
+    overlay.remove();
+    toast('Username / kata sandi berhasil diperbarui');
+    viewIO();
+  });
+}
+
+function showAddUserForm(){
+  const slot = document.getElementById('adduser-slot');
+  slot.innerHTML = `
+    <div class="addrow-form">
+      <input type="text" id="new-user-name" placeholder="Username teman Anda" style="min-width:160px;">
+      <input type="password" id="new-user-pass" placeholder="Kata sandi (min. 4 karakter)" style="min-width:180px;border:1px solid var(--line-strong);padding:8px 10px;border-radius:var(--radius);background:#fff;">
+      <button class="btn primary" id="new-user-save">Simpan</button>
+      <button class="btn ghost" id="new-user-cancel">Batal</button>
+    </div>
+    <div class="login-error" id="new-user-err" style="margin-bottom:14px;"></div>
+  `;
+  document.getElementById('new-user-name').focus();
+  document.getElementById('new-user-cancel').addEventListener('click', ()=>{ slot.innerHTML=''; });
+  document.getElementById('new-user-save').addEventListener('click', async ()=>{
+    const uname = document.getElementById('new-user-name').value.trim();
+    const pass = document.getElementById('new-user-pass').value;
+    const errEl = document.getElementById('new-user-err');
+    if(!uname || pass.length<4){
+      errEl.textContent = !uname ? 'Username tidak boleh kosong.' : 'Kata sandi minimal 4 karakter.';
+      errEl.classList.add('show');
+      return;
+    }
+    const result = await addAuthUser(uname, pass);
+    if(!result.ok){
+      errEl.textContent = 'Username itu sudah dipakai, coba nama lain.';
+      errEl.classList.add('show');
+      return;
+    }
+    toast('Pengguna baru ditambahkan');
+    viewIO();
+  });
+}
+
+function confirmDeleteUser(username){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-bg';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>Hapus pengguna ini?</h3>
+      <p>Akun login “${escapeHtml(username)}” tidak akan bisa dipakai masuk lagi setelah dihapus.</p>
+      <div class="row-actions">
+        <button class="btn ghost" id="deluser-cancel">Batal</button>
+        <button class="btn danger" id="deluser-confirm">Hapus</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#deluser-cancel').addEventListener('click', ()=> overlay.remove());
+  overlay.addEventListener('click', (e)=>{ if(e.target===overlay) overlay.remove(); });
+  overlay.querySelector('#deluser-confirm').addEventListener('click', async ()=>{
+    await removeAuthUser(username);
+    overlay.remove();
+    toast('Pengguna dihapus');
+    viewIO();
+  });
 }
 
 function buildLabaRugiRows(){
@@ -1324,7 +1597,7 @@ function renderLoginScreen(hasAccount, errorMsg){
   if(hasAccount){
     wrap.innerHTML = `
       <div class="login-card">
-        <div class="login-badge">${ICONS.lock}</div>
+        <div class="login-badge">${window.__appIcon ? `<img src="${window.__appIcon}" alt="Laporan Keuangan Dini">` : ICONS.lock}</div>
         <div class="login-title">Laporan Keuangan Dini</div>
         <div class="login-sub">Masuk untuk mengelola laporan laba rugi dan neraca</div>
         <div class="login-form">
@@ -1346,10 +1619,10 @@ function renderLoginScreen(hasAccount, errorMsg){
     const submit = async ()=>{
       const u = document.getElementById('li-user').value.trim();
       const p = document.getElementById('li-pass').value;
-      const auth = await loadAuth();
-      const hash = await sha256Hex(p);
-      if(auth && u.toLowerCase()===auth.username.toLowerCase() && hash===auth.hash){
+      const match = await findAuthUser(u, p);
+      if(match){
         session.loggedIn = true;
+        session.username = match.username;
         startApp();
       } else {
         renderLoginScreen(true, 'Username atau kata sandi salah.');
@@ -1369,9 +1642,9 @@ function renderSetupScreen(isReset){
   document.getElementById('shell').style.display = 'none';
   wrap.innerHTML = `
     <div class="login-card">
-      <div class="login-badge">${ICONS.lock}</div>
+      <div class="login-badge">${window.__appIcon ? `<img src="${window.__appIcon}" alt="Laporan Keuangan Dini">` : ICONS.lock}</div>
       <div class="login-title">Laporan Keuangan Dini</div>
-      <div class="login-sub">${isReset ? 'Buat ulang username dan kata sandi baru' : 'Buat akun untuk mulai menggunakan aplikasi'}</div>
+      <div class="login-sub">${isReset ? 'Buat ulang username dan kata sandi baru (akun lain sebelumnya akan terhapus)' : 'Buat akun pertama untuk mulai menggunakan aplikasi'}</div>
       <div class="login-form">
         <div class="login-error" id="setup-err"></div>
         <div>
@@ -1388,7 +1661,7 @@ function renderSetupScreen(isReset){
         </div>
         <button class="btn primary" id="su-submit">${isReset?'Simpan Akun Baru':'Buat Akun'}</button>
       </div>
-      ${isReset ? `<div class="login-switch">Sudah ingat kata sandi? <a id="su-back">Kembali ke halaman masuk</a></div>` : ''}
+      ${isReset ? `<div class="login-switch">Sudah ingat kata sandi? <a id="su-back">Kembali ke halaman masuk</a></div>` : `<div class="login-switch">Setelah masuk, akun tambahan (mis. untuk rekan Anda) bisa dibuat lewat menu Import / Export.</div>`}
       <div class="login-foot">Laporan Keuangan Dini. Software Developer by Adi Nugraha &copy; 2026</div>
     </div>
   `;
@@ -1400,14 +1673,16 @@ function renderSetupScreen(isReset){
     if(!u){ showErr('Username tidak boleh kosong.'); return; }
     if(p.length<4){ showErr('Kata sandi minimal 4 karakter.'); return; }
     if(p!==p2){ showErr('Kata sandi tidak sama.'); return; }
-    await saveAuth(u, p);
+    const hash = await sha256Hex(p);
+    await saveAuthList([{username:u, hash}]);
     session.loggedIn = true;
+    session.username = u;
     startApp();
   });
   if(isReset){
     document.getElementById('su-back').addEventListener('click', async ()=>{
-      const auth = await loadAuth();
-      renderLoginScreen(!!auth);
+      const list = await loadAuthList();
+      renderLoginScreen(list.length>0);
     });
   }
 }
@@ -1441,8 +1716,8 @@ function render(){
 }
 
 async function init(){
-  const auth = await loadAuth();
-  renderLoginScreen(!!auth);
+  const list = await loadAuthList();
+  renderLoginScreen(list.length>0);
 }
 init();
 </script>
