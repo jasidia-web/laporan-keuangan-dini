@@ -7,152 +7,20 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#123B82">
+<meta name="mobile-web-app-capable" content="yes">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
-/* PWA scaffolding: manifest + theme metadata + best-effort service worker.
-   Full installability (install banner, offline caching) requires the file
-   to be served over HTTPS (or localhost) — browsers block Service Worker
-   registration on file:// origins by design, so this degrades gracefully
-   to "just a webpage" when opened as a local file. */
-(function(){
-  try{
-    // Draw an elegant "financial growth" logo on a canvas so we get a real
-    // PNG (better Android/adaptive-icon support than an SVG data URI), and
-    // reuse the exact same image on the login screen for consistent branding.
-    function roundedPath(ctx,x,y,w,h,r){
-      if(typeof r==='number') r={tl:r,tr:r,br:r,bl:r};
-      ctx.beginPath();
-      ctx.moveTo(x+r.tl,y);
-      ctx.lineTo(x+w-r.tr,y);
-      ctx.arcTo(x+w,y,x+w,y+r.tr,r.tr);
-      ctx.lineTo(x+w,y+h-r.br);
-      ctx.arcTo(x+w,y+h,x+w-r.br,y+h,r.br);
-      ctx.lineTo(x+r.bl,y+h);
-      ctx.arcTo(x,y+h,x,y+h-r.bl,r.bl);
-      ctx.lineTo(x,y+r.tl);
-      ctx.arcTo(x,y,x+r.tl,y,r.tl);
-      ctx.closePath();
-    }
-    function drawLogo(size){
-      var canvas = document.createElement('canvas');
-      canvas.width = size; canvas.height = size;
-      var ctx = canvas.getContext('2d');
-      var r = size*0.22;
-
-      // background gradient (navy -> deep blue -> teal)
-      roundedPath(ctx,0,0,size,size,r);
-      var bg = ctx.createLinearGradient(0,0,size,size);
-      bg.addColorStop(0,'#0A2A63');
-      bg.addColorStop(0.55,'#123B82');
-      bg.addColorStop(1,'#12879C');
-      ctx.fillStyle = bg;
-      ctx.fill();
-
-      // soft inner highlight, clipped to the rounded shape
-      ctx.save();
-      roundedPath(ctx,0,0,size,size,r);
-      ctx.clip();
-      var hl = ctx.createRadialGradient(size*0.30,size*0.24,0,size*0.30,size*0.24,size*0.75);
-      hl.addColorStop(0,'rgba(255,255,255,0.20)');
-      hl.addColorStop(1,'rgba(255,255,255,0)');
-      ctx.fillStyle = hl;
-      ctx.fillRect(0,0,size,size);
-      // thin inner border for a refined, premium edge
-      ctx.strokeStyle = 'rgba(255,255,255,0.14)';
-      ctx.lineWidth = size*0.02;
-      roundedPath(ctx, size*0.01, size*0.01, size*0.98, size*0.98, r*0.95);
-      ctx.stroke();
-      ctx.restore();
-
-      // ascending bars (white, rounded tops)
-      var baseY = size*0.735;
-      var barW = size*0.115;
-      var gap = size*0.055;
-      var heights = [0.28, 0.44, 0.60];
-      var startX = size*0.255;
-      ctx.fillStyle = '#FFFFFF';
-      var tops = [];
-      heights.forEach(function(hr,i){
-        var x = startX + i*(barW+gap);
-        var h = size*hr;
-        roundedPath(ctx, x, baseY-h, barW, h, {tl:barW*0.35,tr:barW*0.35,br:0,bl:0});
-        ctx.fill();
-        tops.push({x:x+barW/2, y:baseY-h});
-      });
-
-      // gold rising trend line + marker dot, arcing above the bars
-      ctx.strokeStyle = '#F0B93E';
-      ctx.lineWidth = size*0.024;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(tops[0].x, tops[0].y - size*0.05);
-      ctx.quadraticCurveTo(size*0.52, size*0.16, tops[2].x + size*0.06, tops[2].y - size*0.07);
-      ctx.stroke();
-      ctx.fillStyle = '#F0B93E';
-      ctx.beginPath();
-      ctx.arc(tops[2].x + size*0.06, tops[2].y - size*0.07, size*0.038, 0, Math.PI*2);
-      ctx.fill();
-
-      return canvas.toDataURL('image/png');
-    }
-
-    var icon192 = drawLogo(192);
-    var icon512 = drawLogo(512);
-    window.__appIcon = icon512; // used by the login screen for matching branding
-
-    var manifest = {
-      name: 'Laporan Keuangan Dini',
-      short_name: 'Buku Kas',
-      description: 'Aplikasi laporan Laba Rugi dan Neraca',
-      start_url: '.',
-      display: 'standalone',
-      background_color: '#0A2A63',
-      theme_color: '#123B82',
-      icons: [
-        {src: icon192, sizes:'192x192', type:'image/png', purpose:'any'},
-        {src: icon512, sizes:'512x512', type:'image/png', purpose:'any'},
-        {src: icon512, sizes:'512x512', type:'image/png', purpose:'maskable'}
-      ]
-    };
-    var manifestBlob = new Blob([JSON.stringify(manifest)], {type:'application/manifest+json'});
-    var link = document.createElement('link');
-    link.rel = 'manifest';
-    link.href = URL.createObjectURL(manifestBlob);
-    document.head.appendChild(link);
-
-    var themeMeta = document.createElement('meta');
-    themeMeta.name = 'theme-color';
-    themeMeta.content = '#123B82';
-    document.head.appendChild(themeMeta);
-
-    var mwc = document.createElement('meta');
-    mwc.name = 'mobile-web-app-capable';
-    mwc.content = 'yes';
-    document.head.appendChild(mwc);
-
-    var appleIcon = document.createElement('link');
-    appleIcon.rel = 'apple-touch-icon';
-    appleIcon.href = icon192;
-    document.head.appendChild(appleIcon);
-
-    var favicon = document.createElement('link');
-    favicon.rel = 'icon';
-    favicon.href = icon192;
-    document.head.appendChild(favicon);
-
-    if('serviceWorker' in navigator && location.protocol.indexOf('http')===0){
-      var swCode = "self.addEventListener('install',e=>self.skipWaiting());"
-        + "self.addEventListener('activate',e=>self.clients.claim());"
-        + "self.addEventListener('fetch',e=>{"
-        + "  e.respondWith(caches.open('buku-kas-v1').then(cache=>"
-        + "    cache.match(e.request).then(res=> res || fetch(e.request).then(net=>{ cache.put(e.request, net.clone()); return net; }).catch(()=>res))"
-        + "  ));"
-        + "});";
-      var swBlob = new Blob([swCode], {type:'application/javascript'});
-      navigator.serviceWorker.register(URL.createObjectURL(swBlob)).catch(function(){});
-    }
-  }catch(e){ /* PWA scaffolding is best-effort; app works fine without it */ }
-})();
+/* Service worker registration only — kept minimal and pointed at a real
+   sw.js file (not a blob: URL) so the installed app keeps working across
+   sessions. Silently skipped on file:// or other non-http(s) origins,
+   where browsers don't allow Service Worker registration at all. */
+if('serviceWorker' in navigator && location.protocol.indexOf('http')===0){
+  navigator.serviceWorker.register('sw.js').catch(function(){});
+}
 </script>
 <style>
   :root{
@@ -465,7 +333,8 @@
     <nav id="nav"></nav>
     <div id="sidebar-foot">
       <div class="yr" id="lastsaved">tersimpan otomatis</div>
-      <button class="btn ghost" id="btn-logout" style="margin-top:10px;color:#D6DED9;border-color:rgba(237,234,224,.25);width:100%;justify-content:center;">Keluar</button>
+      <button class="btn ghost" id="btn-manage-users" style="margin-top:10px;color:#D6DED9;border-color:rgba(237,234,224,.25);width:100%;justify-content:center;">Kelola Pengguna</button>
+      <button class="btn ghost" id="btn-logout" style="margin-top:8px;color:#D6DED9;border-color:rgba(237,234,224,.25);width:100%;justify-content:center;">Keluar</button>
     </div>
   </aside>
   <main id="main"></main>
@@ -1243,7 +1112,6 @@ function viewNeraca(){
    ========================================================= */
 async function viewIO(){
   const main = document.getElementById('main');
-  const users = await loadAuthList();
   main.innerHTML = `
     <div class="sticky-head">
       <div class="topline" style="margin-bottom:0;">
@@ -1269,26 +1137,6 @@ async function viewIO(){
     </div>
 
     <div class="panel">
-      <h2>Kelola Pengguna Login</h2>
-      <p style="color:var(--ink-soft);font-size:13px;margin:0 0 14px;">Tambahkan akun untuk rekan Anda supaya bisa masuk ke aplikasi ini juga, dengan username &amp; kata sandi masing-masing.</p>
-      <div id="user-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;">
-        ${users.map(u=>{
-          const isMe = session.username && session.username.toLowerCase()===u.username.toLowerCase();
-          return `
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--paper-dim);border-radius:8px;">
-            <span style="font-weight:600;display:flex;align-items:center;gap:8px;">${ICONS.user} ${escapeHtml(u.username)}${isMe ? ' <span style="font-weight:500;color:var(--ink-faint);font-size:12px;">(sedang masuk)</span>' : ''}</span>
-            <span style="display:flex;gap:4px;">
-              ${isMe ? `<button class="btn ghost" data-action="edit-self" title="Ubah username / kata sandi saya">${ICONS.edit}</button>` : ''}
-              ${users.length>1 && !isMe ? `<button class="btn ghost" data-action="del-user" data-username="${escapeHtml(u.username)}" title="Hapus pengguna">${ICONS.trash}</button>` : ''}
-            </span>
-          </div>
-        `;}).join('')}
-      </div>
-      <div id="adduser-slot"></div>
-      <button class="btn primary" id="btn-add-user">${ICONS.plus} Tambah Pengguna</button>
-    </div>
-
-    <div class="panel">
       <h2>Hapus Semua Data</h2>
       <p style="color:var(--ink-soft);font-size:13px;margin:0 0 14px;">Mengosongkan seluruh akun dan nilai. Tindakan ini tidak dapat dibatalkan.</p>
       <button class="btn danger" id="btn-clear-all">${ICONS.trash} Hapus Semua Data</button>
@@ -1298,15 +1146,57 @@ async function viewIO(){
   document.getElementById('btn-export-xlsx').addEventListener('click', exportXlsx);
   document.getElementById('file-import').addEventListener('change', handleImportXlsx);
   document.getElementById('btn-clear-all').addEventListener('click', confirmClearAll);
-  document.getElementById('btn-add-user').addEventListener('click', showAddUserForm);
-  main.querySelectorAll('[data-action="del-user"]').forEach(b=>{
-    b.addEventListener('click', ()=> confirmDeleteUser(b.dataset.username));
-  });
-  const editSelfBtn = main.querySelector('[data-action="edit-self"]');
-  if(editSelfBtn) editSelfBtn.addEventListener('click', showEditSelfForm);
 }
 
-function showEditSelfForm(){
+/* ---------- Kelola Pengguna (accessed from the sidebar, near Keluar) ---------- */
+async function showManageUsersModal(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-bg';
+  overlay.innerHTML = `
+    <div class="modal" style="width:400px;">
+      <h3>Kelola Pengguna Login</h3>
+      <p style="font-size:12.5px;color:var(--ink-soft);margin:-6px 0 14px;">Tambahkan akun untuk rekan Anda supaya bisa masuk ke aplikasi ini juga.</p>
+      <div id="manage-users-body"></div>
+      <div class="row-actions">
+        <button class="btn ghost" id="mu-close">Tutup</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', (e)=>{ if(e.target===overlay) overlay.remove(); });
+  overlay.querySelector('#mu-close').addEventListener('click', ()=> overlay.remove());
+  await renderManageUsersBody(overlay);
+}
+
+async function renderManageUsersBody(overlay){
+  const users = await loadAuthList();
+  const body = overlay.querySelector('#manage-users-body');
+  body.innerHTML = `
+    <div id="user-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;">
+      ${users.map(u=>{
+        const isMe = session.username && session.username.toLowerCase()===u.username.toLowerCase();
+        return `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:var(--paper-dim);border-radius:8px;">
+          <span style="font-weight:600;display:flex;align-items:center;gap:8px;font-size:13.5px;">${ICONS.user} ${escapeHtml(u.username)}${isMe ? ' <span style="font-weight:500;color:var(--ink-faint);font-size:11.5px;">(sedang masuk)</span>' : ''}</span>
+          <span style="display:flex;gap:4px;">
+            ${isMe ? `<button class="btn ghost" data-action="edit-self" title="Ubah username / kata sandi saya">${ICONS.edit}</button>` : ''}
+            ${users.length>1 && !isMe ? `<button class="btn ghost" data-action="del-user" data-username="${escapeHtml(u.username)}" title="Hapus pengguna">${ICONS.trash}</button>` : ''}
+          </span>
+        </div>
+      `;}).join('')}
+    </div>
+    <div id="adduser-slot"></div>
+    <button class="btn primary" id="btn-add-user" style="width:100%;justify-content:center;">${ICONS.plus} Tambah Pengguna</button>
+  `;
+  body.querySelector('#btn-add-user').addEventListener('click', ()=> showAddUserForm(overlay));
+  body.querySelectorAll('[data-action="del-user"]').forEach(b=>{
+    b.addEventListener('click', ()=> confirmDeleteUser(b.dataset.username, overlay));
+  });
+  const editSelfBtn = body.querySelector('[data-action="edit-self"]');
+  if(editSelfBtn) editSelfBtn.addEventListener('click', ()=> showEditSelfForm(overlay));
+}
+
+function showEditSelfForm(parentOverlay){
   const overlay = document.createElement('div');
   overlay.className = 'modal-bg';
   overlay.innerHTML = `
@@ -1355,20 +1245,22 @@ function showEditSelfForm(){
     session.username = result.username;
     overlay.remove();
     toast('Username / kata sandi berhasil diperbarui');
-    viewIO();
+    if(parentOverlay) renderManageUsersBody(parentOverlay);
   });
 }
 
-function showAddUserForm(){
-  const slot = document.getElementById('adduser-slot');
+function showAddUserForm(parentOverlay){
+  const slot = parentOverlay.querySelector('#adduser-slot');
   slot.innerHTML = `
-    <div class="addrow-form">
-      <input type="text" id="new-user-name" placeholder="Username teman Anda" style="min-width:160px;">
-      <input type="password" id="new-user-pass" placeholder="Kata sandi (min. 4 karakter)" style="min-width:180px;border:1px solid var(--line-strong);padding:8px 10px;border-radius:var(--radius);background:#fff;">
-      <button class="btn primary" id="new-user-save">Simpan</button>
-      <button class="btn ghost" id="new-user-cancel">Batal</button>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;">
+      <input type="text" id="new-user-name" placeholder="Username teman Anda" style="border:1px solid var(--line-strong);padding:8px 10px;border-radius:var(--radius);background:#fff;">
+      <input type="password" id="new-user-pass" placeholder="Kata sandi (min. 4 karakter)" style="border:1px solid var(--line-strong);padding:8px 10px;border-radius:var(--radius);background:#fff;">
+      <div class="login-error" id="new-user-err"></div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn primary" id="new-user-save" style="flex:1;justify-content:center;">Simpan</button>
+        <button class="btn ghost" id="new-user-cancel">Batal</button>
+      </div>
     </div>
-    <div class="login-error" id="new-user-err" style="margin-bottom:14px;"></div>
   `;
   document.getElementById('new-user-name').focus();
   document.getElementById('new-user-cancel').addEventListener('click', ()=>{ slot.innerHTML=''; });
@@ -1388,11 +1280,11 @@ function showAddUserForm(){
       return;
     }
     toast('Pengguna baru ditambahkan');
-    viewIO();
+    renderManageUsersBody(parentOverlay);
   });
 }
 
-function confirmDeleteUser(username){
+function confirmDeleteUser(username, parentOverlay){
   const overlay = document.createElement('div');
   overlay.className = 'modal-bg';
   overlay.innerHTML = `
@@ -1412,7 +1304,7 @@ function confirmDeleteUser(username){
     await removeAuthUser(username);
     overlay.remove();
     toast('Pengguna dihapus');
-    viewIO();
+    if(parentOverlay) renderManageUsersBody(parentOverlay);
   });
 }
 
@@ -1597,7 +1489,7 @@ function renderLoginScreen(hasAccount, errorMsg){
   if(hasAccount){
     wrap.innerHTML = `
       <div class="login-card">
-        <div class="login-badge">${window.__appIcon ? `<img src="${window.__appIcon}" alt="Laporan Keuangan Dini">` : ICONS.lock}</div>
+        <div class="login-badge"><img src="icon-512.png" alt="Laporan Keuangan Dini"></div>
         <div class="login-title">Laporan Keuangan Dini</div>
         <div class="login-sub">Masuk untuk mengelola laporan laba rugi dan neraca</div>
         <div class="login-form">
@@ -1642,7 +1534,7 @@ function renderSetupScreen(isReset){
   document.getElementById('shell').style.display = 'none';
   wrap.innerHTML = `
     <div class="login-card">
-      <div class="login-badge">${window.__appIcon ? `<img src="${window.__appIcon}" alt="Laporan Keuangan Dini">` : ICONS.lock}</div>
+      <div class="login-badge"><img src="icon-512.png" alt="Laporan Keuangan Dini"></div>
       <div class="login-title">Laporan Keuangan Dini</div>
       <div class="login-sub">${isReset ? 'Buat ulang username dan kata sandi baru (akun lain sebelumnya akan terhapus)' : 'Buat akun pertama untuk mulai menggunakan aplikasi'}</div>
       <div class="login-form">
@@ -1708,6 +1600,8 @@ function render(){
   renderNav();
   const logoutBtn = document.getElementById('btn-logout');
   if(logoutBtn) logoutBtn.onclick = ()=>{ session.loggedIn = false; renderLoginScreen(true); };
+  const manageUsersBtn = document.getElementById('btn-manage-users');
+  if(manageUsersBtn) manageUsersBtn.onclick = showManageUsersModal;
   if(ui.view==='ringkasan') viewRingkasan();
   else if(ui.view==='input') viewInput();
   else if(ui.view==='labarugi') viewLabaRugi();
