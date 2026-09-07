@@ -996,9 +996,11 @@ function viewRingkasan(){
     .sort((a,b)=>b.total-a.total).slice(0,6);
 
   main.innerHTML = `
-    <div class="topline">
-      <div><h1>Ringkasan</h1><div class="desc">Ikhtisar keuangan tahun berjalan</div></div>
-      ${yearSwitcher()}
+    <div class="sticky-head">
+      <div class="topline" style="margin-bottom:0;">
+        <div><h1>Ringkasan</h1><div class="desc">Ikhtisar keuangan tahun berjalan</div></div>
+        ${yearSwitcher()}
+      </div>
     </div>
 
     <div class="cardrow">
@@ -1052,14 +1054,16 @@ function viewInput(){
   const filtered = ui.kindFilter==='all' ? state.accounts : state.accounts.filter(a=>a.kind===ui.kindFilter);
 
   main.innerHTML = `
-    <div class="topline">
-      <div><h1>Data &amp; Input</h1><div class="desc">Tambah, ubah, dan hapus akun serta nominal bulanan</div></div>
-      <div class="controls">
-        ${yearSwitcher()}
-        <button class="btn primary" id="btn-quick-save">${ICONS.save} Simpan</button>
-        <button class="btn" id="btn-quick-export">${ICONS.download} Export Excel</button>
-        <label class="btn" for="quick-import-file">${ICONS.upload} Import Excel</label>
-        <input type="file" id="quick-import-file" accept=".xlsx,.xls" style="display:none;">
+    <div class="sticky-head">
+      <div class="topline" style="margin-bottom:0;">
+        <div><h1>Data &amp; Input</h1><div class="desc">Tambah, ubah, dan hapus akun serta nominal bulanan</div></div>
+        <div class="controls">
+          ${yearSwitcher()}
+          <button class="btn primary" id="btn-quick-save">${ICONS.save} Simpan</button>
+          <button class="btn" id="btn-quick-export">${ICONS.download} Export Excel</button>
+          <label class="btn" for="quick-import-file">${ICONS.upload} Import Excel</label>
+          <input type="file" id="quick-import-file" accept=".xlsx,.xls" style="display:none;">
+        </div>
       </div>
     </div>
 
