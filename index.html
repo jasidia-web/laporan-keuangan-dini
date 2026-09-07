@@ -1324,19 +1324,21 @@ function viewPajak(){
   const grandTotal = colTotals.reduce((s,v)=>s+v,0);
 
   main.innerHTML = `
-    <div class="topline">
-      <div><h1>Laporan Pajak</h1><div class="desc">Rekap bulanan PPh yang dipotong / disetor</div></div>
-      <div class="controls">
-        ${yearSwitcher()}
-        <button class="btn primary" id="btn-pajak-export">${ICONS.download} Export Excel</button>
-        <button class="btn" id="btn-pajak-print">${ICONS.print} Cetak</button>
+    <div class="sticky-head">
+      <div class="topline" style="margin-bottom:14px;">
+        <div><h1>Laporan Pajak</h1><div class="desc">Rekap bulanan PPh yang dipotong / disetor</div></div>
+        <div class="controls no-print">
+          ${yearSwitcher()}
+          <button class="btn primary" id="btn-pajak-export">${ICONS.download} Export Excel</button>
+          <button class="btn" id="btn-pajak-print">${ICONS.print} Cetak</button>
+        </div>
       </div>
-    </div>
 
-    <div class="kindtabs" id="pajaktabs">
-      ${Object.keys(PAJAK_META).map(k=>`
-        <button data-k="${k}" class="${ui.pajakTab===k?'active':''}">${PAJAK_META[k].label}</button>
-      `).join('')}
+      <div class="kindtabs no-print" id="pajaktabs" style="margin-bottom:0;">
+        ${Object.keys(PAJAK_META).map(k=>`
+          <button data-k="${k}" class="${ui.pajakTab===k?'active':''}">${PAJAK_META[k].label}</button>
+        `).join('')}
+      </div>
     </div>
 
     ${type==='pph25' ? `
@@ -1482,19 +1484,21 @@ function viewPajakSpt(){
   const angsuranBerikutnya = sptAngsuranTahunBerikutnya(ui.year);
 
   main.innerHTML = `
-    <div class="topline">
-      <div><h1>Laporan Pajak</h1><div class="desc">Rekap bulanan PPh yang dipotong / disetor</div></div>
-      <div class="controls">
-        ${yearSwitcher()}
-        <button class="btn primary" id="btn-pajak-export">${ICONS.download} Export Excel</button>
-        <button class="btn" id="btn-pajak-print">${ICONS.print} Cetak</button>
+    <div class="sticky-head">
+      <div class="topline" style="margin-bottom:14px;">
+        <div><h1>Laporan Pajak</h1><div class="desc">Rekap bulanan PPh yang dipotong / disetor</div></div>
+        <div class="controls no-print">
+          ${yearSwitcher()}
+          <button class="btn primary" id="btn-pajak-export">${ICONS.download} Export Excel</button>
+          <button class="btn" id="btn-pajak-print">${ICONS.print} Cetak</button>
+        </div>
       </div>
-    </div>
 
-    <div class="kindtabs" id="pajaktabs">
-      ${Object.keys(PAJAK_META).map(k=>`
-        <button data-k="${k}" class="${ui.pajakTab===k?'active':''}">${PAJAK_META[k].label}</button>
-      `).join('')}
+      <div class="kindtabs no-print" id="pajaktabs" style="margin-bottom:0;">
+        ${Object.keys(PAJAK_META).map(k=>`
+          <button data-k="${k}" class="${ui.pajakTab===k?'active':''}">${PAJAK_META[k].label}</button>
+        `).join('')}
+      </div>
     </div>
 
     <div class="panel hint" style="background:var(--gold-bg);border:1px solid var(--gold);color:var(--ink);margin-bottom:16px;padding:12px 16px;font-size:12px;">
