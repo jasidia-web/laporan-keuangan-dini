@@ -13,6 +13,13 @@
 <meta name="theme-color" content="#123B82">
 <meta name="mobile-web-app-capable" content="yes">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- Firebase (Firestore + Anonymous Auth) — dipakai supaya data dan daftar
+     pengguna sinkron di semua perangkat, bukan hanya tersimpan lokal per
+     browser. Lihat FIREBASE_CONFIG di bawah untuk cara mengisi kredensial
+     proyek Firebase Anda sendiri. -->
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
 <script>
 /* Service worker registration only — kept minimal and pointed at a real
    sw.js file (not a blob: URL) so the installed app keeps working across
@@ -391,6 +398,92 @@ if('serviceWorker' in navigator && location.protocol.indexOf('http')===0){
 
 <script>
 /* =========================================================
+   FIREBASE (sinkron data lintas perangkat)
+   =========================================================
+   1. Buat proyek gratis di https://console.firebase.google.com
+   2. Aktifkan "Firestore Database" (mode production) dan
+      "Authentication" -> Sign-in method -> Anonymous -> Enable.
+   3. Buka Project settings -> General -> "Your apps" -> Web app,
+      salin objek config lalu tempel menggantikan nilai di bawah ini.
+   4. Di Firestore -> Rules, tempel:
+        rules_version = '2';
+        service cloud.firestore {
+          match /databases/{database}/documents {
+            match /buku_kas/{docId} {
+              allow read, write: if request.auth != null;
+            }
+          }
+        }
+   Jika FIREBASE_CONFIG dibiarkan seperti contoh (belum diisi), aplikasi
+   otomatis berjalan mode lokal saja (seperti sebelumnya, tidak sinkron). */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyDKoNZsGEbC-1XChjxjqx74zBbtcBvh6Io",
+  authDomain: "laporan-keuangan-dini.firebaseapp.com",
+  projectId: "laporan-keuangan-dini",
+  storageBucket: "laporan-keuangan-dini.firebasestorage.app",
+  messagingSenderId: "307095293234",
+  appId: "1:307095293234:web:179638547da1d0dc391b2b"
+};
+const FIREBASE_ENABLED = !!(FIREBASE_CONFIG.apiKey && !FIREBASE_CONFIG.apiKey.startsWith('GANTI'));
+
+let fbAuth = null, fbDb = null;
+if(FIREBASE_ENABLED){
+  try{
+    firebase.initializeApp(FIREBASE_CONFIG);
+    fbAuth = firebase.auth();
+    fbDb = firebase.firestore();
+    fbDb.enablePersistence({synchronizeTabs:true}).catch(()=>{ /* multi-tab or unsupported browser — ignore */ });
+  }catch(e){ console.error('Firebase init error', e); }
+}
+
+let fbAuthReadyPromise = null;
+function ensureFirebaseAuth(){
+  if(!FIREBASE_ENABLED) return Promise.resolve(false);
+  if(fbAuth.currentUser) return Promise.resolve(true);
+  if(fbAuthReadyPromise) return fbAuthReadyPromise;
+  fbAuthReadyPromise = new Promise((resolve)=>{
+    const unsub = fbAuth.onAuthStateChanged(user=>{
+      if(user){ unsub(); resolve(true); }
+    });
+    fbAuth.signInAnonymously().catch(err=>{
+      console.error('Firebase anonymous sign-in gagal', err);
+      unsub();
+      resolve(false);
+    });
+  });
+  return fbAuthReadyPromise;
+}
+
+let lastSyncedLedgerJSON = null;
+let unsubscribeLedger = null, unsubscribeAuthDoc = null;
+function attachRealtimeSync(){
+  if(!FIREBASE_ENABLED) return;
+  if(unsubscribeLedger) unsubscribeLedger();
+  unsubscribeLedger = fbDb.collection('buku_kas').doc('ledger').onSnapshot({includeMetadataChanges:true}, snap=>{
+    if(snap.metadata.hasPendingWrites) return; // gema dari tulisan kita sendiri, sudah tercermin di layar
+    if(!snap.exists) return;
+    const data = snap.data();
+    if(!data || !data.state) return;
+    const incoming = JSON.stringify(data.state);
+    if(incoming === lastSyncedLedgerJSON) return; // tidak ada perubahan baru dari perangkat lain
+    lastSyncedLedgerJSON = incoming;
+    state = data.state;
+    if(!state.sptBadan) state.sptBadan = {};
+    localSet(STORAGE_KEY, JSON.stringify(state));
+    render();
+    const el = document.getElementById('lastsaved');
+    if(el) el.textContent = 'diperbarui dari perangkat lain ' + new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'});
+  }, err=> console.error('ledger snapshot error', err));
+
+  if(unsubscribeAuthDoc) unsubscribeAuthDoc();
+  unsubscribeAuthDoc = fbDb.collection('buku_kas').doc('auth').onSnapshot(snap=>{
+    if(!snap.exists) return;
+    const data = snap.data();
+    if(Array.isArray(data.users)) localSet(AUTH_KEY, JSON.stringify(data.users));
+  }, err=> console.error('auth snapshot error', err));
+}
+
+/* =========================================================
    DATA LAYER
    ========================================================= */
 const MONTHS = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agt','Sep','Okt','Nov','Des'];
@@ -437,6 +530,22 @@ async function sha256Hex(text){
   return h1.toString(16).padStart(8,'0') + h2.toString(16).padStart(8,'0');
 }
 async function loadAuthList(){
+  if(FIREBASE_ENABLED){
+    try{
+      const ok = await ensureFirebaseAuth();
+      if(ok){
+        const snap = await fbDb.collection('buku_kas').doc('auth').get();
+        if(snap.exists){
+          const data = snap.data();
+          if(Array.isArray(data.users)){
+            localSet(AUTH_KEY, JSON.stringify(data.users)); // cache lokal untuk mode offline
+            return data.users;
+          }
+        }
+        return []; // dokumen belum ada di cloud — belum ada akun di manapun
+      }
+    }catch(e){ console.error('loadAuthList: gagal ambil dari cloud, pakai cache lokal', e); }
+  }
   const raw = localGet(AUTH_KEY);
   if(!raw) return [];
   try{
@@ -447,7 +556,20 @@ async function loadAuthList(){
   }catch(e){ return []; }
 }
 async function saveAuthList(list){
-  return localSet(AUTH_KEY, JSON.stringify(list));
+  localSet(AUTH_KEY, JSON.stringify(list)); // cache lokal selalu diperbarui
+  if(FIREBASE_ENABLED){
+    try{
+      const ok = await ensureFirebaseAuth();
+      if(ok){
+        await fbDb.collection('buku_kas').doc('auth').set({ users: list });
+        return true;
+      }
+    }catch(e){
+      console.error('saveAuthList: gagal simpan ke cloud', e);
+      toast('Akun tersimpan lokal saja — belum tersinkron ke cloud');
+    }
+  }
+  return true;
 }
 async function addAuthUser(username, password){
   const list = await loadAuthList();
@@ -575,6 +697,23 @@ function seedState(){
 function emptyState(){ return { accounts:[], values:{}, sptBadan:{} }; }
 
 async function loadState(){
+  if(FIREBASE_ENABLED){
+    try{
+      const ok = await ensureFirebaseAuth();
+      if(ok){
+        const snap = await fbDb.collection('buku_kas').doc('ledger').get();
+        if(snap.exists){
+          const data = snap.data();
+          if(data && data.state){
+            lastSyncedLedgerJSON = JSON.stringify(data.state);
+            localSet(STORAGE_KEY, JSON.stringify(data.state)); // cache lokal untuk mode offline
+            return data.state;
+          }
+        }
+        return null; // belum ada data di cloud sama sekali
+      }
+    }catch(e){ console.error('loadState: gagal ambil dari cloud, pakai cache lokal', e); }
+  }
   const raw = localGet(STORAGE_KEY);
   if(!raw) return null;
   try{ return JSON.parse(raw); }catch(e){ return null; }
@@ -586,8 +725,27 @@ function scheduleSave(){
   saveTimer = setTimeout(doSave, 350);
 }
 async function doSave(){
-  const ok = localSet(STORAGE_KEY, JSON.stringify(state));
+  const ok = localSet(STORAGE_KEY, JSON.stringify(state)); // cache lokal selalu diperbarui dulu
   const el = document.getElementById('lastsaved');
+  if(FIREBASE_ENABLED){
+    try{
+      const authOk = await ensureFirebaseAuth();
+      if(!authOk) throw new Error('Firebase auth tidak siap');
+      lastSyncedLedgerJSON = JSON.stringify(state);
+      await fbDb.collection('buku_kas').doc('ledger').set({
+        state: state,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedBy: session.username || ''
+      });
+      if(el){ el.textContent = 'tersinkron ' + new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}); }
+      return;
+    }catch(e){
+      console.error('doSave: gagal sinkron ke cloud', e);
+      if(el){ el.textContent = 'tersimpan lokal (belum tersinkron)'; }
+      toast('Belum tersinkron ke cloud — periksa koneksi internet');
+      return;
+    }
+  }
   if(ok){
     if(el){ el.textContent = 'tersimpan ' + new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}); }
   } else {
@@ -2080,6 +2238,7 @@ async function startApp(){
     state = seedState();
     ui.year = 2025;
   }
+  attachRealtimeSync();
   render();
 }
 
