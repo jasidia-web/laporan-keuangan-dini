@@ -556,10 +556,23 @@ function seedState(){
     accounts.push({id,name,kind});
     values[id] = { 2025: vals.slice() };
   });
-  return { accounts, values };
+  const sptBadan = {
+    2025: {
+      pkpSebelumFasilitas: 715326164,
+      pkp: 715326000,
+      tarifKeterangan: 'Tarif Fasilitas sebagaimana Pasal 31E ayat (1) UU PPh',
+      pphTerutang: 78685860,
+      kreditPihakLain: 621600,
+      angsuranPph25Setahun: 70247544,
+      stpPph25: 0,
+      statusSpt: 'Normal',
+      tanggalTerima: '05 Maret 2026',
+    }
+  };
+  return { accounts, values, sptBadan };
 }
 
-function emptyState(){ return { accounts:[], values:{} }; }
+function emptyState(){ return { accounts:[], values:{}, sptBadan:{} }; }
 
 async function loadState(){
   const raw = localGet(STORAGE_KEY);
@@ -613,6 +626,36 @@ function kindTotal(kind, year, fromMonth, toMonth){
 }
 
 /* =========================================================
+   SPT TAHUNAN BADAN — data ringkasan per tahun pajak
+   ========================================================= */
+function emptySptRow(){
+  return {
+    pkpSebelumFasilitas: 0,
+    pkp: 0,
+    tarifKeterangan: '',
+    pphTerutang: 0,
+    kreditPihakLain: 0,
+    angsuranPph25Setahun: 0,
+    stpPph25: 0,
+    statusSpt: '',
+    tanggalTerima: '',
+  };
+}
+function getSpt(year){
+  if(!state.sptBadan) state.sptBadan = {};
+  if(!state.sptBadan[year]) state.sptBadan[year] = emptySptRow();
+  return state.sptBadan[year];
+}
+function sptKurangBayar(year){
+  const s = getSpt(year);
+  return (s.pphTerutang||0) - (s.kreditPihakLain||0) - (s.angsuranPph25Setahun||0) - (s.stpPph25||0);
+}
+function sptAngsuranTahunBerikutnya(year){
+  const s = getSpt(year);
+  return Math.round(((s.pphTerutang||0) - (s.kreditPihakLain||0)) / 12);
+}
+
+/* =========================================================
    LAPORAN PAJAK — pencocokan akun per jenis PPh
    ========================================================= */
 const PAJAK_META = {
@@ -639,6 +682,11 @@ const PAJAK_META = {
     desc: 'PPh Final Pasal 4 ayat (2) atas sewa tanah/bangunan, tarif 10%',
     regex: /pajak\s*sewa\s*gedung|sewa\s*gedung|pph\s*final.*sewa|sewa.*pph\s*final/i,
     suggestName: 'Pajak Sewa Gedung',
+  },
+  spt: {
+    label: 'SPT Tahunan Badan',
+    desc: 'Ringkasan Penghasilan Kena Pajak, PPh Terutang, dan kurang/lebih bayar dari SPT Tahunan',
+    isForm: true,
   },
 };
 function taxAccounts(type){
@@ -1266,6 +1314,7 @@ function exportPajakXlsx(type){
 }
 
 function viewPajak(){
+  if(PAJAK_META[ui.pajakTab].isForm){ viewPajakSpt(); return; }
   const main = document.getElementById('main');
   const type = ui.pajakTab;
   const meta = PAJAK_META[type];
@@ -1400,6 +1449,147 @@ function viewPajak(){
     });
     inp.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.target.blur(); } });
   });
+}
+
+/* =========================================================
+   VIEW: LAPORAN PAJAK — SPT TAHUNAN BADAN (form ringkasan)
+   ========================================================= */
+function sptField(label, key, opts){
+  opts = opts || {};
+  const s = getSpt(ui.year);
+  const val = s[key];
+  if(opts.text){
+    return `
+      <div class="rline" style="align-items:center;">
+        <span class="l">${label}</span>
+        <input type="text" class="spt-field" data-key="${key}" data-text="1" value="${escapeHtml(val||'')}"
+          style="text-align:right;border:1px solid var(--line-strong);border-radius:4px;padding:4px 8px;font-family:inherit;font-size:13px;width:220px;">
+      </div>`;
+  }
+  return `
+    <div class="rline" style="align-items:center;">
+      <span class="l">${label}</span>
+      <input type="text" inputmode="numeric" class="spt-field num" data-key="${key}" value="${val?fmtNum(val):''}" placeholder="0"
+        style="text-align:right;border:1px solid var(--line-strong);border-radius:4px;padding:4px 8px;font-family:'IBM Plex Mono',monospace;font-size:13px;width:220px;">
+    </div>`;
+}
+
+function viewPajakSpt(){
+  const main = document.getElementById('main');
+  const meta = PAJAK_META['spt'];
+  const s = getSpt(ui.year);
+  const kurangBayar = sptKurangBayar(ui.year);
+  const angsuranBerikutnya = sptAngsuranTahunBerikutnya(ui.year);
+
+  main.innerHTML = `
+    <div class="topline">
+      <div><h1>Laporan Pajak</h1><div class="desc">Rekap bulanan PPh yang dipotong / disetor</div></div>
+      <div class="controls">
+        ${yearSwitcher()}
+        <button class="btn primary" id="btn-pajak-export">${ICONS.download} Export Excel</button>
+        <button class="btn" id="btn-pajak-print">${ICONS.print} Cetak</button>
+      </div>
+    </div>
+
+    <div class="kindtabs" id="pajaktabs">
+      ${Object.keys(PAJAK_META).map(k=>`
+        <button data-k="${k}" class="${ui.pajakTab===k?'active':''}">${PAJAK_META[k].label}</button>
+      `).join('')}
+    </div>
+
+    <div class="panel hint" style="background:var(--gold-bg);border:1px solid var(--gold);color:var(--ink);margin-bottom:16px;padding:12px 16px;font-size:12px;">
+      <b>Catatan:</b> Isi angka-angka di bawah sesuai SPT Tahunan Badan yang sudah dilaporkan untuk tahun pajak ${ui.year}
+      (mengikuti Induk SPT Bagian D–G). Penghasilan Kena Pajak sudah dibulatkan ke bawah dalam ribuan penuh sesuai
+      ketentuan DJP — jumlah ini bisa sedikit berbeda dari Laba (Rugi) Kena Pajak Fiskal di Laba Rugi (selisih pembulatan, bukan kesalahan).
+      Baris "PPh Kurang/Lebih Bayar" dan "Angsuran PPh 25 Tahun Berikutnya" dihitung otomatis.
+    </div>
+
+    <div class="cardrow">
+      <div class="kpi"><div class="lbl">Penghasilan Kena Pajak (PKP)</div><div class="val">${fmtRp(s.pkp)}</div><div class="sub">Tahun Pajak ${ui.year}</div></div>
+      <div class="kpi"><div class="lbl">PPh Terutang</div><div class="val neg">${fmtRp(s.pphTerutang)}</div><div class="sub">${escapeHtml(s.tarifKeterangan||'')}</div></div>
+      <div class="kpi"><div class="lbl">PPh Kurang/(Lebih) Bayar — Ps.29</div><div class="val ${kurangBayar>=0?'neg':'pos'}">${fmtRp(kurangBayar)}</div><div class="sub">Terutang − kredit − angsuran − STP</div></div>
+      <div class="kpi"><div class="lbl">Angsuran PPh 25 Tahun Berikutnya</div><div class="val">${fmtRp(angsuranBerikutnya)}</div><div class="sub">per bulan, (Terutang − kredit pihak lain) / 12</div></div>
+    </div>
+
+    <div class="panel report" style="max-width:640px;">
+      <div class="rtitle"><h2>Ringkasan SPT Tahunan Badan</h2><div class="period">Tahun Pajak ${ui.year}</div></div>
+
+      <div class="grp">Perhitungan PPh Terutang</div>
+      ${sptField('Penghasilan Neto Fiskal Sebelum Fasilitas', 'pkpSebelumFasilitas')}
+      ${sptField('Penghasilan Kena Pajak (PKP)', 'pkp')}
+      ${sptField('Keterangan Tarif / Fasilitas', 'tarifKeterangan', {text:true})}
+      ${sptField('PPh Terutang', 'pphTerutang')}
+
+      <div class="grp">Pengurang / Kredit Pajak</div>
+      ${sptField('Kredit Pajak Dipotong/Dipungut Pihak Lain (PPh 23, dll)', 'kreditPihakLain')}
+      ${sptField('Angsuran PPh Pasal 25 Sepanjang Tahun', 'angsuranPph25Setahun')}
+      ${sptField('STP PPh Pasal 25 (Pokok)', 'stpPph25')}
+      <div class="rline total"><span>PPh Kurang/(Lebih) Bayar — Pasal 29</span><span class="${kurangBayar>=0?'neg':'pos'}">${fmtRp(kurangBayar)}</span></div>
+
+      <div class="grp">Angsuran PPh 25 Tahun Berikutnya</div>
+      <div class="rline"><span class="l">PPh Dibayar Sendiri (Terutang − Kredit Pihak Lain)</span><span class="v">${fmtRp((s.pphTerutang||0)-(s.kreditPihakLain||0))}</span></div>
+      <div class="rline grand"><span>Angsuran per Bulan</span><span class="v">${fmtRp(angsuranBerikutnya)}</span></div>
+
+      <div class="grp">Status Pelaporan</div>
+      ${sptField('Status SPT', 'statusSpt', {text:true})}
+      ${sptField('Tanggal Terima SPT (BPE)', 'tanggalTerima', {text:true})}
+    </div>
+    <div class="panel hint" style="font-size:12px;color:var(--ink-faint);">
+      Klik kotak angka/teks untuk mengubah nilai. Data ini disimpan per tahun pajak dan dipakai sebagai dasar proyeksi di tab "PPh 25 Badan".
+    </div>
+  `;
+
+  bindYearSwitcher(viewPajakSpt);
+  document.getElementById('pajaktabs').querySelectorAll('button').forEach(b=>{
+    b.addEventListener('click', ()=>{ ui.pajakTab = b.dataset.k; viewPajak(); });
+  });
+  document.getElementById('btn-pajak-export').addEventListener('click', exportSptXlsx);
+  document.getElementById('btn-pajak-print').addEventListener('click', ()=> window.print());
+
+  main.querySelectorAll('.spt-field').forEach(inp=>{
+    inp.addEventListener('focus', (e)=>{ e.target.select(); });
+    inp.addEventListener('blur', (e)=>{
+      const key = e.target.dataset.key;
+      const row = getSpt(ui.year);
+      row[key] = e.target.dataset.text ? e.target.value.trim() : parseNum(e.target.value);
+      scheduleSave();
+      viewPajakSpt();
+    });
+    inp.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.target.blur(); } });
+  });
+}
+
+function buildSptRows(){
+  const s = getSpt(ui.year);
+  const kurangBayar = sptKurangBayar(ui.year);
+  const angsuranBerikutnya = sptAngsuranTahunBerikutnya(ui.year);
+  return [
+    ['RINGKASAN SPT TAHUNAN BADAN', 'Tahun Pajak ' + ui.year], [],
+    ['PERHITUNGAN PPh TERUTANG'],
+    ['Penghasilan Neto Fiskal Sebelum Fasilitas', s.pkpSebelumFasilitas],
+    ['Penghasilan Kena Pajak (PKP)', s.pkp],
+    ['Keterangan Tarif/Fasilitas', s.tarifKeterangan],
+    ['PPh Terutang', s.pphTerutang], [],
+    ['PENGURANG / KREDIT PAJAK'],
+    ['Kredit Pajak Dipotong/Dipungut Pihak Lain', s.kreditPihakLain],
+    ['Angsuran PPh Pasal 25 Sepanjang Tahun', s.angsuranPph25Setahun],
+    ['STP PPh Pasal 25 (Pokok)', s.stpPph25],
+    ['PPh Kurang/(Lebih) Bayar - Pasal 29', kurangBayar], [],
+    ['ANGSURAN PPh 25 TAHUN BERIKUTNYA'],
+    ['PPh Dibayar Sendiri', (s.pphTerutang||0)-(s.kreditPihakLain||0)],
+    ['Angsuran per Bulan', angsuranBerikutnya], [],
+    ['STATUS PELAPORAN'],
+    ['Status SPT', s.statusSpt],
+    ['Tanggal Terima SPT (BPE)', s.tanggalTerima],
+  ];
+}
+function exportSptXlsx(){
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(buildSptRows());
+  ws['!cols'] = [{wch:42},{wch:20}];
+  XLSX.utils.book_append_sheet(wb, ws, 'SPT Tahunan Badan');
+  XLSX.writeFile(wb, `SPT-Tahunan-Badan-${ui.year}.xlsx`);
+  toast('File Excel diunduh');
 }
 
 /* =========================================================
@@ -1879,6 +2069,7 @@ async function startApp(){
   const loaded = await loadState();
   if(loaded){
     state = loaded;
+    if(!state.sptBadan) state.sptBadan = {};
     const ys = yearsAvailable();
     ui.year = ys.length ? ys[ys.length-1] : new Date().getFullYear();
   } else {
