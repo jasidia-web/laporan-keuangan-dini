@@ -490,6 +490,7 @@ let ui = {
   month: 11,           // 0-indexed, default Des
   reportMode: 'bulan',  // bulan | ytd | tahun
   kindFilter: 'all',
+  pajakTab: 'pph21',    // pph21 | pph26
 };
 
 function uid(){ return 'a' + Math.random().toString(36).slice(2,10); }
@@ -612,6 +613,28 @@ function kindTotal(kind, year, fromMonth, toMonth){
 }
 
 /* =========================================================
+   LAPORAN PAJAK — pencocokan akun PPh 21 / PPh 26
+   ========================================================= */
+const PAJAK_META = {
+  pph21: {
+    label: 'PPh Pasal 21',
+    desc: 'Pemotongan atas penghasilan pegawai/karyawan',
+    regex: /pph\s*(pasal\s*)?21\b|pph\s*ps\.?\s*21\b/i,
+    suggestName: 'PPh Ps.21',
+  },
+  pph26: {
+    label: 'PPh 26',
+    desc: 'Angsuran/setoran bulanan yang selama ini dicatat sebagai "PPh 26" pada pembukuan',
+    regex: /pph\s*(pasal\s*)?26\b|\bpph\s*26\b/i,
+    suggestName: 'PPh26 Badan Per Bulan',
+  },
+};
+function taxAccounts(type){
+  const re = PAJAK_META[type].regex;
+  return state.accounts.filter(a => re.test(a.name));
+}
+
+/* =========================================================
    FORMATTING
    ========================================================= */
 function fmtRp(n){
@@ -661,6 +684,7 @@ const ICONS = {
   logout:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
   print:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>',
   user:'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>',
+  percent:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/></svg>',
 };
 
 /* =========================================================
@@ -671,6 +695,7 @@ const VIEWS = [
   {id:'input', label:'Data & Input', short:'Input', icon:'table'},
   {id:'labarugi', label:'Laba Rugi', short:'Laba Rugi', icon:'doc'},
   {id:'neraca', label:'Neraca', short:'Neraca', icon:'scale'},
+  {id:'pajak', label:'Laporan Pajak', short:'Pajak', icon:'percent'},
   {id:'io', label:'Import / Export', short:'Impor', icon:'swap'},
 ];
 function renderNav(){
@@ -1189,6 +1214,169 @@ function viewNeraca(){
 }
 
 /* =========================================================
+   VIEW: LAPORAN PAJAK (PPh 21 / PPh 26)
+   ========================================================= */
+function renderPajakRow(a){
+  const vals = getVals(a.id, ui.year);
+  const total = vals.reduce((s,v)=>s+(v||0),0);
+  return `
+    <tr>
+      <td class="name">${escapeHtml(a.name)}</td>
+      ${vals.map((v,m)=>`<td><input class="cell" type="text" inputmode="numeric" data-acc="${a.id}" data-m="${m}" value="${v?fmtNum(v):''}" placeholder="0"></td>`).join('')}
+      <td class="rowtotal num" style="text-align:right;padding:9px 8px;">${fmtNum(total)}</td>
+    </tr>
+  `;
+}
+
+function buildPajakRows(type){
+  const meta = PAJAK_META[type];
+  const accs = taxAccounts(type);
+  const rows = [[('LAPORAN ' + meta.label).toUpperCase(), 'Tahun ' + ui.year], []];
+  rows.push(['Akun', ...MONTHS, 'Total']);
+  accs.forEach(a=>{
+    const vals = getVals(a.id, ui.year);
+    rows.push([a.name, ...vals, vals.reduce((s,v)=>s+(v||0),0)]);
+  });
+  const colTotals = new Array(12).fill(0);
+  accs.forEach(a=>{ const v = getVals(a.id, ui.year); for(let m=0;m<12;m++) colTotals[m]+=v[m]||0; });
+  rows.push(['Total', ...colTotals, colTotals.reduce((s,v)=>s+v,0)]);
+  return rows;
+}
+
+function exportPajakXlsx(type){
+  const meta = PAJAK_META[type];
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(buildPajakRows(type));
+  ws['!cols'] = [{wch:30}, ...MONTHS.map(()=>({wch:13})), {wch:15}];
+  XLSX.utils.book_append_sheet(wb, ws, meta.label.slice(0,31));
+  XLSX.writeFile(wb, `Laporan-${meta.label.replace(/\s+/g,'-')}-${ui.year}.xlsx`);
+  toast('File Excel diunduh');
+}
+
+function viewPajak(){
+  const main = document.getElementById('main');
+  const type = ui.pajakTab;
+  const meta = PAJAK_META[type];
+  const accs = taxAccounts(type);
+  const colTotals = new Array(12).fill(0);
+  accs.forEach(a=>{ const v = getVals(a.id, ui.year); for(let m=0;m<12;m++) colTotals[m]+=v[m]||0; });
+  const grandTotal = colTotals.reduce((s,v)=>s+v,0);
+
+  main.innerHTML = `
+    <div class="topline">
+      <div><h1>Laporan Pajak</h1><div class="desc">Rekap bulanan PPh yang dipotong / disetor</div></div>
+      <div class="controls">
+        ${yearSwitcher()}
+        <button class="btn primary" id="btn-pajak-export">${ICONS.download} Export Excel</button>
+        <button class="btn" id="btn-pajak-print">${ICONS.print} Cetak</button>
+      </div>
+    </div>
+
+    <div class="kindtabs" id="pajaktabs">
+      ${Object.keys(PAJAK_META).map(k=>`
+        <button data-k="${k}" class="${ui.pajakTab===k?'active':''}">${PAJAK_META[k].label}</button>
+      `).join('')}
+    </div>
+
+    ${type==='pph26' ? `
+    <div class="panel hint" style="background:var(--gold-bg);border:1px solid var(--gold);color:var(--ink);margin-bottom:16px;padding:12px 16px;font-size:12px;">
+      <b>Catatan:</b> Pos "PPh 26" di pembukuan ini pada praktiknya adalah angsuran <b>PPh Pasal 25 Badan</b> (kode e-Billing 411126),
+      bukan PPh Pasal 26 yang sebenarnya (kode 411127, untuk pembayaran ke Wajib Pajak Luar Negeri). Nama akun dipertahankan
+      sesuai istilah yang sudah dipakai dalam pembukuan sehari-hari.
+    </div>
+    ` : ''}
+
+    <div class="cardrow">
+      <div class="kpi"><div class="lbl">Total ${meta.label} Tahun ${ui.year}</div><div class="val neg">${fmtRp(grandTotal)}</div><div class="sub">${meta.desc}</div></div>
+      <div class="kpi"><div class="lbl">Jumlah Akun Terkait</div><div class="val">${accs.length}</div><div class="sub">akun cocok dengan "${meta.label}"</div></div>
+    </div>
+
+    <div class="panel" style="padding:0;">
+      <div style="padding:18px 22px 14px;display:flex;justify-content:space-between;align-items:center;">
+        <h2>Rekap Bulanan ${meta.label} — ${ui.year}</h2>
+      </div>
+      <div id="pajak-addrow-slot" style="padding:0 22px;"></div>
+      ${accs.length===0 ? `
+      <div class="empty-state" style="padding-bottom:30px;">
+        <h3>Belum ada akun ${meta.label}</h3>
+        <p>Belum ditemukan akun dengan nama yang cocok. Tambahkan akun baru khusus ${meta.label}, atau ganti nama akun yang sudah ada di menu Data &amp; Input agar mengandung kata "${meta.label}".</p>
+        <button class="btn primary" id="btn-pajak-add" style="margin-top:8px;">${ICONS.plus} Tambah Akun ${meta.label}</button>
+      </div>
+      ` : `
+      <div class="table-scroll">
+        <table class="ledger">
+          <thead><tr>
+            <th>Akun</th>
+            ${MONTHS.map(m=>`<th>${m}</th>`).join('')}
+            <th>Total</th>
+          </tr></thead>
+          <tbody>
+            ${accs.map(a=>renderPajakRow(a)).join('')}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td style="text-align:left;">Total ${meta.label}</td>
+              ${colTotals.map(v=>`<td class="num" style="text-align:right;padding:10px 8px;">${fmtNum(v)}</td>`).join('')}
+              <td class="num" style="text-align:right;padding:10px 8px;">${fmtNum(grandTotal)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      `}
+    </div>
+    <div class="panel hint" style="font-size:12px;color:var(--ink-faint);">
+      Klik sel angka untuk mengubah nilai bulanan — data ini adalah akun yang sama dengan yang ada di menu Data &amp; Input, hanya disaring khusus untuk ${meta.label}.
+    </div>
+  `;
+
+  bindYearSwitcher(viewPajak);
+  document.getElementById('pajaktabs').querySelectorAll('button').forEach(b=>{
+    b.addEventListener('click', ()=>{ ui.pajakTab = b.dataset.k; viewPajak(); });
+  });
+  document.getElementById('btn-pajak-export').addEventListener('click', ()=> exportPajakXlsx(type));
+  document.getElementById('btn-pajak-print').addEventListener('click', ()=> window.print());
+
+  const addBtn = document.getElementById('btn-pajak-add');
+  if(addBtn){
+    addBtn.addEventListener('click', ()=>{
+      const slot = document.getElementById('pajak-addrow-slot');
+      slot.innerHTML = `
+        <div class="addrow-form">
+          <input type="text" id="pajak-new-name" value="${escapeHtml(meta.suggestName)}" placeholder="Nama akun">
+          <button class="btn primary" id="pajak-new-save">Simpan</button>
+          <button class="btn ghost" id="pajak-new-cancel">Batal</button>
+        </div>
+      `;
+      document.getElementById('pajak-new-name').focus();
+      document.getElementById('pajak-new-cancel').addEventListener('click', ()=>{ slot.innerHTML=''; });
+      document.getElementById('pajak-new-save').addEventListener('click', ()=>{
+        const name = document.getElementById('pajak-new-name').value.trim();
+        if(!name){ toast('Nama akun tidak boleh kosong'); return; }
+        const id = uid();
+        state.accounts.push({id, name, kind:'biaya'});
+        state.values[id] = { [ui.year]: new Array(12).fill(0) };
+        scheduleSave();
+        toast('Akun ditambahkan');
+        viewPajak();
+      });
+    });
+  }
+
+  main.querySelectorAll('input.cell').forEach(inp=>{
+    inp.addEventListener('focus', (e)=>{ e.target.select(); });
+    inp.addEventListener('blur', (e)=>{
+      const id = e.target.dataset.acc;
+      const m = parseInt(e.target.dataset.m);
+      const n = parseNum(e.target.value);
+      setVal(id, ui.year, m, n);
+      scheduleSave();
+      viewPajak();
+    });
+    inp.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.target.blur(); } });
+  });
+}
+
+/* =========================================================
    VIEW: IMPORT / EXPORT
    ========================================================= */
 async function viewIO(){
@@ -1689,6 +1877,7 @@ function render(){
   else if(ui.view==='input') viewInput();
   else if(ui.view==='labarugi') viewLabaRugi();
   else if(ui.view==='neraca') viewNeraca();
+  else if(ui.view==='pajak') viewPajak();
   else if(ui.view==='io') viewIO();
 }
 
