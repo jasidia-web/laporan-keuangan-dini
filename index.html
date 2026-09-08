@@ -1896,6 +1896,12 @@ async function viewIO(){
     </div>
 
     <div class="panel">
+      <h2>Perbaiki Duplikat Akun 2026</h2>
+      <p style="color:var(--ink-soft);font-size:13px;margin:0 0 14px;">Menghapus 6 akun duplikat hasil Import Excel sebelumnya (PAM, PLN, PPh 21, PPh26 Badan perbulan, Biaya Admin.Bank, Sertifikat ISO 9001 : 2015 / By.Pengobatan) dan mengisi ulang akun aslinya dengan nilai Januari–Agustus 2026 yang benar sesuai file Excel Anda. Klik sekali saja.</p>
+      <button class="btn primary" id="btn-fix-dupes-2026">${ICONS.edit} Perbaiki Sekarang</button>
+    </div>
+
+    <div class="panel">
       <h2>Hapus Semua Data</h2>
       <p style="color:var(--ink-soft);font-size:13px;margin:0 0 14px;">Mengosongkan seluruh akun dan nilai. Tindakan ini tidak dapat dibatalkan.</p>
       <button class="btn danger" id="btn-clear-all">${ICONS.trash} Hapus Semua Data</button>
@@ -1905,6 +1911,43 @@ async function viewIO(){
   document.getElementById('btn-export-xlsx').addEventListener('click', exportXlsx);
   document.getElementById('file-import').addEventListener('change', handleImportXlsx);
   document.getElementById('btn-clear-all').addEventListener('click', confirmClearAll);
+  document.getElementById('btn-fix-dupes-2026').addEventListener('click', fixDuplicateAccounts2026);
+}
+
+/* ---------- Perbaikan sekali-pakai: akun duplikat 2026 hasil Import Excel ---------- */
+function fixDuplicateAccounts2026(){
+  const YEAR = 2026;
+  // [namaAsli, [Jan..Agt yang benar], [namaDuplikatUntukDihapus, ...]]
+  const fixes = [
+    ['Pembayaran PAM', [600000,295434,420434,316000,1230868,500000,315934,450000], ['PAM']],
+    ['Pembayaran Daya PLN', [2815954,2279178,2074847,1737786,2703655,2453866,2513629,2705489], ['PLN']],
+    ['PPh Ps.21', [4589525,0,0,0,0,0,0,0], ['PPh 21']],
+    ['PPh26 Badan Per Bulan', [6082533,6082533,6082533,6505355,6505355,6505355,6505355,6505355], ['PPh26 Badan perbulan']],
+    ['Biaya Admin Bank', [121118,396428,166358,135461,159477,182796,212438,224607], ['Biaya Admin.Bank']],
+    ['Sertifikat ISO 9001:2015', [0,7000000,0,0,0,0,0,0], ['Sertifikat ISO 9001 : 2015']],
+    ['Biaya Pengobatan', [0,0,0,0,0,0,0,0], ['By.Pengobatan']],
+  ];
+  let fixedCount=0, removedCount=0;
+  fixes.forEach(([origName, vals8, dupNames])=>{
+    const orig = state.accounts.find(a=>a.name.trim().toLowerCase()===origName.toLowerCase());
+    if(orig){
+      const full12 = vals8.concat([0,0,0,0]); // Sep-Des belum ada datanya
+      state.values[orig.id] = state.values[orig.id] || {};
+      state.values[orig.id][YEAR] = full12;
+      fixedCount++;
+    }
+    dupNames.forEach(dn=>{
+      const dup = state.accounts.find(a=>a.name.trim().toLowerCase()===dn.toLowerCase());
+      if(dup){
+        state.accounts = state.accounts.filter(a=>a.id!==dup.id);
+        delete state.values[dup.id];
+        removedCount++;
+      }
+    });
+  });
+  scheduleSave();
+  toast(`Selesai: ${fixedCount} akun diperbaiki, ${removedCount} akun duplikat dihapus`);
+  render();
 }
 
 /* ---------- Kelola Pengguna (accessed from the sidebar, near Keluar) ---------- */
