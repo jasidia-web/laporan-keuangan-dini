@@ -1072,24 +1072,14 @@ function excelRowStyle(name){
 }
 
 /* "L/R Perbulan" = Pendapatan Usaha dikurangi TOTAL SEMUA biaya bulan itu.
-   Formula ini terverifikasi cocok persis dengan Excel untuk Februari–Desember.
-   KHUSUS Januari: file Excel sumber (rumus kolom B) tidak menyertakan akun
-   "Simpanan Gedung" pada pengurangan bulan itu (kelewatan saat rumus dibuat),
-   sehingga nilai Januari di Excel beda dari total yang sebenarnya. Baris di
-   bawah ini SENGAJA mereplikasi kekhususan itu supaya angka Januari identik
-   dengan Excel — meski secara matematis tidak konsisten dengan bulan lain
-   maupun dengan baris "Rangkuman: L/R" di Excel yang sama. */
+   Sama persis dengan baris "L/R" di bagian Rangkuman Excel. */
 function lrPerbulanMonthly(year){
   const pendapatanAccs = accountsByKind('pendapatan');
   const biayaAccs = accountsByKind('biaya');
-  const simpananGedung = state.accounts.find(a => a.name.trim().toLowerCase()==='simpanan gedung');
   const out = [];
   for(let m=0;m<12;m++){
     const pend = pendapatanAccs.reduce((s,a)=>s+sumRange(a.id,year,m,m),0);
-    let biaya = biayaAccs.reduce((s,a)=>s+sumRange(a.id,year,m,m),0);
-    if(m===0 && simpananGedung){
-      biaya -= sumRange(simpananGedung.id, year, 0, 0); // replikasi kekhususan Januari di Excel
-    }
+    const biaya = biayaAccs.reduce((s,a)=>s+sumRange(a.id,year,m,m),0);
     out.push(pend - biaya);
   }
   return out;
@@ -1175,6 +1165,45 @@ function viewInput(){
       </div>
       `}
     </div>
+    ${(ui.kindFilter==='all' || ui.kindFilter==='biaya') ? (()=>{
+      const pendapatanAccs = accountsByKind('pendapatan');
+      const biayaAccs = accountsByKind('biaya');
+      const pend = [], peng = [], lr = [];
+      for(let m=0;m<12;m++){
+        const p = pendapatanAccs.reduce((s,a)=>s+sumRange(a.id,ui.year,m,m),0);
+        const b = biayaAccs.reduce((s,a)=>s+sumRange(a.id,ui.year,m,m),0);
+        pend.push(p); peng.push(b); lr.push(p-b);
+      }
+      const pendTotal = pend.reduce((s,v)=>s+v,0);
+      const pengTotal = peng.reduce((s,v)=>s+v,0);
+      const lrTotal = lr.reduce((s,v)=>s+v,0);
+      const rangkumanRow = (label, vals, total, style) => `
+        <tr>
+          <td style="text-align:left;padding:10px 8px;${style||''}">${label}</td>
+          ${vals.map(v=>`<td class="num" style="text-align:right;padding:10px 8px;${style||''}${v<0?'color:var(--rust);':''}">${fmtNum(v)}</td>`).join('')}
+          <td class="num" style="text-align:right;padding:10px 8px;${style||''}${total<0?'color:var(--rust);':''}">${fmtNum(total)}</td>
+        </tr>`;
+      return `
+    <div class="panel" style="padding:0;">
+      <div style="padding:18px 22px 4px;">
+        <h2>Rangkuman</h2>
+      </div>
+      <div class="table-scroll">
+        <table class="ledger">
+          <thead><tr>
+            <th></th>
+            ${MONTHS.map(m=>`<th>${m}</th>`).join('')}
+            <th>Total</th>
+          </tr></thead>
+          <tbody>
+            ${rangkumanRow('Pendapatan ' + ui.year, pend, pendTotal)}
+            ${rangkumanRow('Pengeluaran per bulan', peng, pengTotal)}
+            ${rangkumanRow('L/R', lr, lrTotal, 'background:#FFFF00;font-weight:700;')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+    })() : ''}
     <div class="panel hint" style="font-size:12px;color:var(--ink-faint);">
       Klik sel angka untuk mengubah nilai bulanan. Gunakan ikon pensil untuk mengganti nama/jenis akun, dan ikon tempat sampah untuk menghapus akun beserta seluruh datanya.
     </div>
