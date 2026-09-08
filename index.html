@@ -1071,25 +1071,26 @@ function excelRowStyle(name){
   return `background:#${c};${dark?'color:#fff;':''}`;
 }
 
-/* Daftar 17 akun biaya yang dikurangkan dari Pendapatan Usaha untuk
-   menghitung "L/R Perbulan" — persis mengikuti formula pada file Excel
-   sumber (=B5-B7-B8-B10-B12-B13-B14-B15-B16-B18-B21-B31-B32-B36-B40-B42-B43-B55).
-   Akun biaya lain di luar daftar ini SENGAJA tidak dikurangkan, sesuai
-   formula aslinya. */
-const LR_PERBULAN_ACCOUNTS = [
-  'gaji','sodakoh','cicilan kendaraan mobil','konsumsi','materai','cetakan',
-  'vpn telkom','catering','sinking fund cicilan bri','kas kecil',
-  'bpjs kesehatan','bpjs ketenagakerjaan','pph26 badan per bulan',
-  'biaya admin bank','pnbp','billing approval pnbp','biaya lain-lain'
-];
+/* "L/R Perbulan" = Pendapatan Usaha dikurangi TOTAL SEMUA biaya bulan itu.
+   Formula ini terverifikasi cocok persis dengan Excel untuk Februari–Desember.
+   KHUSUS Januari: file Excel sumber (rumus kolom B) tidak menyertakan akun
+   "Simpanan Gedung" pada pengurangan bulan itu (kelewatan saat rumus dibuat),
+   sehingga nilai Januari di Excel beda dari total yang sebenarnya. Baris di
+   bawah ini SENGAJA mereplikasi kekhususan itu supaya angka Januari identik
+   dengan Excel — meski secara matematis tidak konsisten dengan bulan lain
+   maupun dengan baris "Rangkuman: L/R" di Excel yang sama. */
 function lrPerbulanMonthly(year){
   const pendapatanAccs = accountsByKind('pendapatan');
-  const targetAccs = state.accounts.filter(a => LR_PERBULAN_ACCOUNTS.includes(a.name.trim().toLowerCase()));
+  const biayaAccs = accountsByKind('biaya');
+  const simpananGedung = state.accounts.find(a => a.name.trim().toLowerCase()==='simpanan gedung');
   const out = [];
   for(let m=0;m<12;m++){
     const pend = pendapatanAccs.reduce((s,a)=>s+sumRange(a.id,year,m,m),0);
-    const kurang = targetAccs.reduce((s,a)=>s+sumRange(a.id,year,m,m),0);
-    out.push(pend - kurang);
+    let biaya = biayaAccs.reduce((s,a)=>s+sumRange(a.id,year,m,m),0);
+    if(m===0 && simpananGedung){
+      biaya -= sumRange(simpananGedung.id, year, 0, 0); // replikasi kekhususan Januari di Excel
+    }
+    out.push(pend - biaya);
   }
   return out;
 }
