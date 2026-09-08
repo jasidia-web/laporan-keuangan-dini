@@ -765,6 +765,19 @@ function setVal(accountId, year, monthIdx, num){
 function accountsByKind(kind){
   return state.accounts.filter(a => kind==='all' ? true : a.kind===kind);
 }
+/* Beberapa akun neraca (Pinjaman Diterima, DP Aset Alih Kepemilikan Ruko)
+   secara historis berada di baris "biaya" (baris 6-55) pada file Excel
+   sumber, sehingga nilainya ikut terjumlah ke "Pengeluaran per bulan" &
+   "L/R Perbulan" di sana walau sebenarnya item neraca. Supaya angka di
+   Data & Input sama persis dengan Excel, akun-akun ini ikut disertakan
+   khusus untuk perhitungan "Pengeluaran per bulan" — TIDAK memengaruhi
+   perhitungan Neraca maupun Laba Rugi resmi di halaman lain. */
+const PENGELUARAN_EXTRA_NAMES = ['pinjaman diterima','dp aset alih kepemilikan ruko'];
+function pengeluaranTotal(year, m){
+  const biayaAccs = accountsByKind('biaya');
+  const extraAccs = state.accounts.filter(a => PENGELUARAN_EXTRA_NAMES.includes(a.name.trim().toLowerCase()));
+  return biayaAccs.reduce((s,a)=>s+sumRange(a.id,year,m,m),0) + extraAccs.reduce((s,a)=>s+sumRange(a.id,year,m,m),0);
+}
 function yearsAvailable(){
   const ys = new Set([ui.year]);
   state.accounts.forEach(a=>{
@@ -1075,11 +1088,10 @@ function excelRowStyle(name){
    Sama persis dengan baris "L/R" di bagian Rangkuman Excel. */
 function lrPerbulanMonthly(year){
   const pendapatanAccs = accountsByKind('pendapatan');
-  const biayaAccs = accountsByKind('biaya');
   const out = [];
   for(let m=0;m<12;m++){
     const pend = pendapatanAccs.reduce((s,a)=>s+sumRange(a.id,year,m,m),0);
-    const biaya = biayaAccs.reduce((s,a)=>s+sumRange(a.id,year,m,m),0);
+    const biaya = pengeluaranTotal(year, m);
     out.push(pend - biaya);
   }
   return out;
@@ -1142,9 +1154,8 @@ function viewInput(){
             ${(ui.kindFilter==='all' || ui.kindFilter==='biaya') ? (()=>{
               const lr = lrPerbulanMonthly(ui.year);
               const lrTotal = lr.reduce((s,v)=>s+v,0);
-              const biayaAccs = accountsByKind('biaya');
               const peng = [];
-              for(let m=0;m<12;m++) peng.push(biayaAccs.reduce((s,a)=>s+sumRange(a.id,ui.year,m,m),0));
+              for(let m=0;m<12;m++) peng.push(pengeluaranTotal(ui.year, m));
               const pengTotal = peng.reduce((s,v)=>s+v,0);
               return `
             <tr>
@@ -1167,11 +1178,10 @@ function viewInput(){
     </div>
     ${(ui.kindFilter==='all' || ui.kindFilter==='biaya') ? (()=>{
       const pendapatanAccs = accountsByKind('pendapatan');
-      const biayaAccs = accountsByKind('biaya');
       const pend = [], peng = [], lr = [];
       for(let m=0;m<12;m++){
         const p = pendapatanAccs.reduce((s,a)=>s+sumRange(a.id,ui.year,m,m),0);
-        const b = biayaAccs.reduce((s,a)=>s+sumRange(a.id,ui.year,m,m),0);
+        const b = pengeluaranTotal(ui.year, m);
         pend.push(p); peng.push(b); lr.push(p-b);
       }
       const pendTotal = pend.reduce((s,v)=>s+v,0);
@@ -2138,6 +2148,14 @@ function exportNeracaXlsx(){
   toast('File Excel diunduh');
 }
 
+/* Menormalkan nama akun (huruf kecil, tanpa titik/titik-dua, spasi rapat)
+   supaya "PAM" vs "Pembayaran PAM" atau "Biaya Admin.Bank" vs "Biaya Admin
+   Bank" dikenali sebagai akun yang SAMA saat Import Excel — mencegah
+   duplikat akun yang bikin nominal dobel-hitung. */
+function normalizeAccName(name){
+  return (name||'').toString().trim().toLowerCase().replace(/[.:]/g,'').replace(/\s+/g,' ').trim();
+}
+
 function handleImportXlsx(e){
   const file = e.target.files[0];
   if(!file) return;
@@ -2173,7 +2191,7 @@ function handleImportXlsx(e){
         });
         while(vals.length<12) vals.push(0);
 
-        let acc = state.accounts.find(a=>a.name.toLowerCase()===name.toLowerCase());
+        let acc = state.accounts.find(a=>normalizeAccName(a.name)===normalizeAccName(name));
         if(!acc){
           const kind = /pendapat/i.test(name) ? 'pendapatan' : 'biaya';
           acc = {id: uid(), name, kind};
