@@ -645,6 +645,7 @@ function seedState(){
     ['THR','biaya',[0,0,97500000,0,0,0,0,0,0,0,0,0]],
     ['Zakat','biaya',[0,0,7233000,0,0,0,0,0,0,0,0,0]],
     ['Qurban','biaya',[0,0,0,0,25000000,0,0,0,0,0,0,0]],
+    ['Iuran CSR','biaya',[0,0,0,0,0,0,0,0,0,0,0,0]],
     ['BPJS Kesehatan','biaya',[3732468,3900416,3900416,3900416,3900416,3684384,3684384,3684384,3684000,3468000,3468000,3468000]],
     ['BPJS Ketenagakerjaan','biaya',[4391952,4134000,4134000,4134000,4134000,3905040,3905040,3905040,3905040,3676080,3676080,3676080]],
     ['Talangan Biaya Diklat','biaya',[0,0,0,0,0,0,0,0,0,0,0,0]],
@@ -659,6 +660,9 @@ function seedState(){
     ['PNBP','biaya',[5000000,2000000,5000000,3000000,3000000,5000000,4000000,5000000,5000000,5000000,5000000,3000000]],
     ['Billing Approval PNBP','biaya',[8800000,0,0,0,0,0,0,0,0,0,0,0]],
     ['Telkom','biaya',[0,0,932092,932092,900000,926183,923267,923822,923267,927394,928881,934208]],
+    ['Server Monitoring','biaya',[0,0,0,0,0,0,0,0,0,0,0,0]],
+    ['Seragam Kantor','biaya',[0,0,0,0,0,0,0,0,0,0,0,0]],
+    ['Iuran Denda Pajak Th Badan 2019 [Yayasan]','biaya',[0,0,0,0,0,0,0,0,0,0,0,0]],
     ['Pinjaman Diterima','neraca_kredit',[0,0,0,0,0,0,0,0,78600000,0,0,0]],
     ['Biaya Provisi/Adm/Materai/Asuransi','biaya',[0,0,0,0,0,0,0,0,0,0,0,0]],
     ['Biaya Pembukaan Rekening Pinjaman','biaya',[0,0,0,0,0,0,0,0,0,0,0,0]],
@@ -692,6 +696,69 @@ function seedState(){
     }
   };
   return { accounts, values, sptBadan };
+}
+
+/* Daftar akun baku (nama + jenis) yang WAJIB ada di aplikasi, diambil dari
+   seluruh baris pada template Excel Rekap Cost (2025 & 2026). Dipisah dari
+   seedState() supaya bisa dipakai juga untuk "menyusulkan" akun yang belum
+   ada pada data yang SUDAH tersimpan (lihat ensureDefaultAccounts di bawah) —
+   karena seedState() hanya jalan sekali saat aplikasi masih kosong, akun baru
+   yang ditambahkan ke daftar ini tidak akan otomatis muncul di data lama. */
+function defaultAccountDefs(){
+  return [
+    ['Honor','biaya'], ['Gaji','biaya'], ['Sodakoh','biaya'], ['Kendaraan Motor','biaya'],
+    ['Cicilan Kendaraan Mobil','biaya'], ['Pajak Mobil','biaya'], ['Konsumsi','biaya'],
+    ['Materai','biaya'], ['Cetakan','biaya'], ['VPN Telkom','biaya'], ['Catering','biaya'],
+    ['MPN','biaya'], ['Sinking Fund Cicilan BRI','biaya'], ['Website Development','biaya'],
+    ['Biaya Cek Materai','biaya'], ['Kas Kecil','biaya'], ['Sertifikat Nidi and SLO','biaya'],
+    ['Biaya Pengobatan','biaya'], ['Simpanan Gedung','biaya'], ['Peralatan Kantor Pengajuan','biaya'],
+    ['Kertas Sertifikat','biaya'], ['Pembayaran PAM','biaya'], ['THR','biaya'], ['Zakat','biaya'],
+    ['Qurban','biaya'], ['Iuran CSR','biaya'], ['BPJS Kesehatan','biaya'], ['BPJS Ketenagakerjaan','biaya'],
+    ['Talangan Biaya Diklat','biaya'], ['Pajak Sewa Gedung','biaya'], ['PPh Badan Akhir Tahun','biaya'],
+    ['PPh26 Badan Per Bulan','biaya'], ['PPh Ps.21','biaya'], ['Pembayaran Daya PLN','biaya'],
+    ['Perpanjang Akta','biaya'], ['Biaya Admin Bank','biaya'], ['Refund','biaya'], ['PNBP','biaya'],
+    ['Billing Approval PNBP','biaya'], ['Telkom','biaya'], ['Server Monitoring','biaya'],
+    ['Seragam Kantor','biaya'], ['Iuran Denda Pajak Th Badan 2019 [Yayasan]','biaya'],
+    ['Biaya Provisi/Adm/Materai/Asuransi','biaya'], ['Biaya Pembukaan Rekening Pinjaman','biaya'],
+    ['Biaya BPHTB & Pajak Pembelian Ruko','biaya'], ['Sertifikat ISO 9001:2015','biaya'],
+    ['PPS','biaya'], ['STP Pajak','biaya'], ['Pembelian MAP Diklat','biaya'],
+    ['Pembayaran Cek','biaya'], ['Biaya Lain-lain','biaya'],
+  ];
+}
+
+/* Beberapa akun punya nama yang berbeda-beda antar tahun di file Excel
+   sumbernya sendiri (mis. 2026 menulis "PAM" & "PLN", sedangkan 2025 menulis
+   "Pembayaran PAM" & "Pembayaran Daya PLN"). Alias ini membuat nama-nama itu
+   dikenali sebagai akun yang SAMA — baik saat pencocokan akun default maupun
+   saat impor Excel — supaya tidak muncul akun duplikat. */
+const ACCOUNT_NAME_ALIASES = {
+  'pam': 'pembayaran pam',
+  'pln': 'pembayaran daya pln',
+  'pph 21': 'pph ps21',
+  'sertifikat iso 9001 2015': 'sertifikat iso 90012015',
+};
+function normalizeAccName(name){
+  const n = (name||'').toString().trim().toLowerCase().replace(/[.:]/g,'').replace(/\s+/g,' ').trim();
+  return ACCOUNT_NAME_ALIASES[n] || n;
+}
+
+/* Menambahkan akun-akun baku yang belum ada ke data yang SUDAH tersimpan,
+   tanpa mengubah/menghapus data yang sudah diisi. Dipanggil setiap kali
+   aplikasi dibuka dengan data lama (bukan data kosong/baru). */
+function ensureDefaultAccounts(){
+  if(!state || !Array.isArray(state.accounts)) return false;
+  const existing = new Set(state.accounts.map(a=>normalizeAccName(a.name)));
+  let added = false;
+  defaultAccountDefs().forEach(([name,kind])=>{
+    const key = normalizeAccName(name);
+    if(existing.has(key)) return;
+    const id = uid();
+    state.accounts.push({id, name, kind});
+    state.values[id] = state.values[id] || {};
+    existing.add(key);
+    added = true;
+  });
+  return added;
 }
 
 function emptyState(){ return { accounts:[], values:{}, sptBadan:{} }; }
@@ -2191,14 +2258,6 @@ function exportNeracaXlsx(){
   toast('File Excel diunduh');
 }
 
-/* Menormalkan nama akun (huruf kecil, tanpa titik/titik-dua, spasi rapat)
-   supaya "PAM" vs "Pembayaran PAM" atau "Biaya Admin.Bank" vs "Biaya Admin
-   Bank" dikenali sebagai akun yang SAMA saat Import Excel — mencegah
-   duplikat akun yang bikin nominal dobel-hitung. */
-function normalizeAccName(name){
-  return (name||'').toString().trim().toLowerCase().replace(/[.:]/g,'').replace(/\s+/g,' ').trim();
-}
-
 function handleImportXlsx(e){
   const file = e.target.files[0];
   if(!file) return;
@@ -2395,6 +2454,7 @@ async function startApp(){
   if(loaded){
     state = loaded;
     if(!state.sptBadan) state.sptBadan = {};
+    if(ensureDefaultAccounts()) scheduleSave(); // susulkan akun baku yang belum ada di data lama
     const ys = yearsAvailable();
     ui.year = ys.length ? ys[ys.length-1] : new Date().getFullYear();
   } else {
