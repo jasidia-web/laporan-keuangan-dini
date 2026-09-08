@@ -728,17 +728,26 @@ function defaultAccountDefs(){
 
 /* Beberapa akun punya nama yang berbeda-beda antar tahun di file Excel
    sumbernya sendiri (mis. 2026 menulis "PAM" & "PLN", sedangkan 2025 menulis
-   "Pembayaran PAM" & "Pembayaran Daya PLN"). Alias ini membuat nama-nama itu
-   dikenali sebagai akun yang SAMA — baik saat pencocokan akun default maupun
-   saat impor Excel — supaya tidak muncul akun duplikat. */
+   "Pembayaran PAM" & "Pembayaran Daya PLN"; ada juga selisih tanda baca
+   seperti koma/garis-miring/tanda-&, dan beberapa salah ketik seperti "ahli"
+   vs "alih"). Alias ini membuat nama-nama itu dikenali sebagai akun yang
+   SAMA — baik saat pencocokan akun default maupun saat impor Excel —
+   supaya tidak muncul akun duplikat yang bikin nominal dobel-hitung. */
 const ACCOUNT_NAME_ALIASES = {
   'pam': 'pembayaran pam',
   'pln': 'pembayaran daya pln',
-  'pph 21': 'pph ps21',
-  'sertifikat iso 9001 2015': 'sertifikat iso 90012015',
+  'pph 21': 'pph ps 21',
+  'by pengobatan': 'biaya pengobatan',
+  'pph26 badan perbulan': 'pph26 badan per bulan',
+  'pinjaman': 'pinjaman diterima',
+  'dp aset ahli kepemilikan ruko': 'dp aset alih kepemilikan ruko',
 };
 function normalizeAccName(name){
-  const n = (name||'').toString().trim().toLowerCase().replace(/[.:]/g,'').replace(/\s+/g,' ').trim();
+  // Tanda baca seperti . : , / & diganti SPASI (bukan dihapus polos) supaya
+  // "Biaya Admin.Bank" match dengan "Biaya Admin Bank", "Biaya BPHTB, Pajak
+  // pembelian Ruko" match dengan "Biaya BPHTB & Pajak Pembelian Ruko", dst.
+  const n = (name||'').toString().trim().toLowerCase()
+    .replace(/[.:,/&]/g,' ').replace(/\s+/g,' ').trim();
   return ACCOUNT_NAME_ALIASES[n] || n;
 }
 
