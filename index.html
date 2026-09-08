@@ -617,6 +617,22 @@ let ui = {
 
 function uid(){ return 'a' + Math.random().toString(36).slice(2,10); }
 
+/* Dipakai setiap kali sebuah sel input selesai diisi (blur) dan tabel perlu
+   digambar ulang supaya kolom Total / baris L/R ikut ter-update. Karena
+   render ulang mengganti seluruh innerHTML, posisi scroll (baik scroll
+   halaman maupun scroll tabel ke kanan) akan direset browser ke atas/kiri
+   kalau tidak disimpan & dikembalikan manual seperti ini. */
+function rerenderPreserveScroll(renderFn){
+  const scrollBox = document.querySelector('#main .table-scroll');
+  const boxLeft = scrollBox ? scrollBox.scrollLeft : 0;
+  const boxTop = scrollBox ? scrollBox.scrollTop : 0;
+  const winX = window.scrollX, winY = window.scrollY;
+  renderFn();
+  const newBox = document.querySelector('#main .table-scroll');
+  if(newBox){ newBox.scrollLeft = boxLeft; newBox.scrollTop = boxTop; }
+  window.scrollTo(winX, winY);
+}
+
 function seedState(){
   const rows = [
     ['Pendapatan Usaha','pendapatan',[205649654,274993015,300049934,235660333,228306243,236777101,264149335,222627248,285660194,233375562,212921157,250906497]],
@@ -1316,7 +1332,7 @@ function viewInput(){
       const n = parseNum(e.target.value);
       setVal(id, ui.year, m, n);
       scheduleSave();
-      viewInput();
+      rerenderPreserveScroll(viewInput);
     });
     inp.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.target.blur(); } });
   });
@@ -1793,7 +1809,7 @@ function viewPajak(){
       const n = parseNum(e.target.value);
       setVal(id, ui.year, m, n);
       scheduleSave();
-      viewPajak();
+      rerenderPreserveScroll(viewPajak);
     });
     inp.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.target.blur(); } });
   });
@@ -1903,7 +1919,7 @@ function viewPajakSpt(){
       const row = getSpt(ui.year);
       row[key] = e.target.dataset.text ? e.target.value.trim() : parseNum(e.target.value);
       scheduleSave();
-      viewPajakSpt();
+      rerenderPreserveScroll(viewPajakSpt);
     });
     inp.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.target.blur(); } });
   });
