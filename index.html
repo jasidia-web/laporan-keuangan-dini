@@ -1137,6 +1137,7 @@ function viewInput(){
             ${filtered.map(a=>renderInputRow(a)).join('')}
           </tbody>
           <tfoot>
+            ${(ui.kindFilter==='all' || ui.kindFilter==='biaya') ? '' : `
             <tr>
               <td style="text-align:left;">Total (${ui.kindFilter==='all'?'semua akun':KIND_META[ui.kindFilter].label})</td>
               ${(()=>{
@@ -1146,7 +1147,7 @@ function viewInput(){
               })()}
               <td class="num" style="text-align:right;padding:10px 8px;">${fmtNum(filtered.reduce((s,a)=>s+sumRange(a.id,ui.year,0,11),0))}</td>
               <td></td>
-            </tr>
+            </tr>`}
             ${(ui.kindFilter==='all' || ui.kindFilter==='biaya') ? (()=>{
               const lr = lrPerbulanMonthly(ui.year);
               const lrTotal = lr.reduce((s,v)=>s+v,0);
@@ -1155,17 +1156,17 @@ function viewInput(){
               for(let m=0;m<12;m++) peng.push(biayaAccs.reduce((s,a)=>s+sumRange(a.id,ui.year,m,m),0));
               const pengTotal = peng.reduce((s,v)=>s+v,0);
               return `
-            <tr style="background:#BFBFBF;font-weight:600;">
-              <td style="text-align:left;">L/R Perbulan</td>
-              ${lr.map(v=>`<td class="num" style="text-align:right;padding:10px 8px;${v<0?'color:var(--rust);':''}">${fmtNum(v)}</td>`).join('')}
-              <td class="num" style="text-align:right;padding:10px 8px;${lrTotal<0?'color:var(--rust);':''}">${fmtNum(lrTotal)}</td>
-              <td></td>
+            <tr>
+              <td style="text-align:left;background:#BFBFBF;font-weight:600;">L/R Perbulan</td>
+              ${lr.map(v=>`<td class="num" style="text-align:right;padding:10px 8px;background:#BFBFBF;font-weight:600;${v<0?'color:var(--rust);':''}">${fmtNum(v)}</td>`).join('')}
+              <td class="num" style="text-align:right;padding:10px 8px;background:#BFBFBF;font-weight:600;${lrTotal<0?'color:var(--rust);':''}">${fmtNum(lrTotal)}</td>
+              <td style="background:#BFBFBF;"></td>
             </tr>
-            <tr style="background:#808080;color:#fff;font-weight:600;">
-              <td style="text-align:left;">Pengeluaran per bulan</td>
-              ${peng.map(v=>`<td class="num" style="text-align:right;padding:10px 8px;">${fmtNum(v)}</td>`).join('')}
-              <td class="num" style="text-align:right;padding:10px 8px;">${fmtNum(pengTotal)}</td>
-              <td></td>
+            <tr>
+              <td style="text-align:left;background:#4A4A4A;color:#fff;font-weight:700;">Pengeluaran per bulan</td>
+              ${peng.map(v=>`<td class="num" style="text-align:right;padding:10px 8px;background:#4A4A4A;color:#fff;font-weight:700;">${fmtNum(v)}</td>`).join('')}
+              <td class="num" style="text-align:right;padding:10px 8px;background:#4A4A4A;color:#fff;font-weight:700;">${fmtNum(pengTotal)}</td>
+              <td style="background:#4A4A4A;"></td>
             </tr>`;
             })() : ''}
           </tfoot>
