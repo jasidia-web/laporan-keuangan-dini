@@ -1049,6 +1049,29 @@ function monthRangeForMode(){
   return [0,11];
 }
 
+/* Daftar 17 akun biaya yang dikurangkan dari Pendapatan Usaha untuk
+   menghitung "L/R Perbulan" — persis mengikuti formula pada file Excel
+   sumber (=B5-B7-B8-B10-B12-B13-B14-B15-B16-B18-B21-B31-B32-B36-B40-B42-B43-B55).
+   Akun biaya lain di luar daftar ini SENGAJA tidak dikurangkan, sesuai
+   formula aslinya. */
+const LR_PERBULAN_ACCOUNTS = [
+  'gaji','sodakoh','cicilan kendaraan mobil','konsumsi','materai','cetakan',
+  'vpn telkom','catering','sinking fund cicilan bri','kas kecil',
+  'bpjs kesehatan','bpjs ketenagakerjaan','pph26 badan per bulan',
+  'biaya admin bank','pnbp','billing approval pnbp','biaya lain-lain'
+];
+function lrPerbulanMonthly(year){
+  const pendapatanAccs = accountsByKind('pendapatan');
+  const targetAccs = state.accounts.filter(a => LR_PERBULAN_ACCOUNTS.includes(a.name.trim().toLowerCase()));
+  const out = [];
+  for(let m=0;m<12;m++){
+    const pend = pendapatanAccs.reduce((s,a)=>s+sumRange(a.id,year,m,m),0);
+    const kurang = targetAccs.reduce((s,a)=>s+sumRange(a.id,year,m,m),0);
+    out.push(pend - kurang);
+  }
+  return out;
+}
+
 function viewInput(){
   const main = document.getElementById('main');
   const filtered = ui.kindFilter==='all' ? state.accounts : state.accounts.filter(a=>a.kind===ui.kindFilter);
@@ -1102,6 +1125,17 @@ function viewInput(){
               <td class="num" style="text-align:right;padding:10px 8px;">${fmtNum(filtered.reduce((s,a)=>s+sumRange(a.id,ui.year,0,11),0))}</td>
               <td></td>
             </tr>
+            ${(ui.kindFilter==='all' || ui.kindFilter==='biaya') ? (()=>{
+              const lr = lrPerbulanMonthly(ui.year);
+              const lrTotal = lr.reduce((s,v)=>s+v,0);
+              return `
+            <tr style="background:var(--gold-bg,#fff7d6);font-weight:600;">
+              <td style="text-align:left;">L/R Perbulan</td>
+              ${lr.map(v=>`<td class="num" style="text-align:right;padding:10px 8px;${v<0?'color:var(--rust);':''}">${fmtNum(v)}</td>`).join('')}
+              <td class="num" style="text-align:right;padding:10px 8px;${lrTotal<0?'color:var(--rust);':''}">${fmtNum(lrTotal)}</td>
+              <td></td>
+            </tr>`;
+            })() : ''}
           </tfoot>
         </table>
       </div>
