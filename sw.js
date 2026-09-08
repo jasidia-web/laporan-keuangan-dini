@@ -1,4 +1,4 @@
-const CACHE_NAME = 'buku-kas-v2';
+const CACHE_NAME = 'buku-kas-v3';
 
 self.addEventListener('install', (e) => {
   self.skipWaiting();

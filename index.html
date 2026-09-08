@@ -497,7 +497,24 @@ const KIND_META = {
 };
 const STORAGE_KEY = 'ledger_v1';
 const AUTH_KEY = 'ledger_auth_v1';
+const SESSION_KEY = 'ledger_session_v1';
 let session = { loggedIn:false };
+
+/* Simpan status login ke localStorage supaya bertahan setelah refresh/tutup
+   tab. session.loggedIn sendiri cuma variabel di memori, jadi tanpa ini
+   statusnya hilang tiap kali skrip dimuat ulang (itu sebabnya sebelumnya
+   selalu logout ketika halaman di-refresh). */
+function saveSession(username){
+  localSet(SESSION_KEY, JSON.stringify({ username }));
+}
+function clearSession(){
+  try{ localStorage.removeItem(SESSION_KEY); }catch(e){}
+}
+function loadSession(){
+  const raw = localGet(SESSION_KEY);
+  if(!raw) return null;
+  try{ const data = JSON.parse(raw); return data && data.username ? data : null; }catch(e){ return null; }
+}
 
 /* Local browser storage — works when this file is opened directly (downloaded
    and run from disk) or hosted anywhere, unlike the Claude-artifact-only
@@ -1060,6 +1077,7 @@ function showMobileMoreSheet(){
   overlay.querySelector('#sheet-logout').addEventListener('click', ()=>{
     overlay.remove();
     session.loggedIn = false;
+    clearSession();
     renderLoginScreen(true);
   });
 }
@@ -2474,6 +2492,7 @@ function renderSetupScreen(isReset){
 }
 
 async function startApp(){
+  saveSession(session.username);
   showShell(true);
   const loaded = await loadState();
   if(loaded){
@@ -2496,7 +2515,7 @@ async function startApp(){
 function render(){
   renderNav();
   const logoutBtn = document.getElementById('btn-logout');
-  if(logoutBtn) logoutBtn.onclick = ()=>{ session.loggedIn = false; renderLoginScreen(true); };
+  if(logoutBtn) logoutBtn.onclick = ()=>{ session.loggedIn = false; clearSession(); renderLoginScreen(true); };
   const manageUsersBtn = document.getElementById('btn-manage-users');
   if(manageUsersBtn) manageUsersBtn.onclick = showManageUsersModal;
   const mbMoreBtn = document.getElementById('mb-more');
@@ -2511,6 +2530,19 @@ function render(){
 
 async function init(){
   const list = await loadAuthList();
+  const saved = loadSession();
+  // Kalau ada sesi tersimpan dan username-nya masih terdaftar (belum dihapus
+  // lewat menu Kelola Pengguna), langsung masuk tanpa minta login ulang.
+  if(saved){
+    const stillValid = list.some(u=> u.username.toLowerCase() === saved.username.toLowerCase());
+    if(stillValid){
+      session.loggedIn = true;
+      session.username = list.find(u=> u.username.toLowerCase() === saved.username.toLowerCase()).username;
+      startApp();
+      return;
+    }
+    clearSession();
+  }
   renderLoginScreen(list.length>0);
 }
 init();
