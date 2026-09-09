@@ -2269,6 +2269,24 @@ function exportXlsx(){
     rows.push([a.name, KIND_META[a.kind].label, ...vals, vals.reduce((s,v)=>s+v,0)]);
   });
   const ws1 = XLSX.utils.aoa_to_sheet(rows);
+
+  /* Kolom TOTAL diisi rumus SUM (bukan angka statis) supaya file hasil
+     export ini bisa dipakai lagi sebagai template di tahun berikutnya:
+     tinggal timpa nominal bulanannya (JAN..DES), TOTAL otomatis terhitung
+     ulang oleh Excel. Ini tidak mengganggu Import Excel, karena proses
+     import hanya membaca kolom Akun & kolom bulan, kolom TOTAL diabaikan. */
+  const totalColIdx = header.length - 1;
+  const firstMonthColIdx = 2;
+  const lastMonthColIdx = totalColIdx - 1;
+  const totalColLetter = XLSX.utils.encode_col(totalColIdx);
+  const firstMonthLetter = XLSX.utils.encode_col(firstMonthColIdx);
+  const lastMonthLetter = XLSX.utils.encode_col(lastMonthColIdx);
+  for(let r=1; r<rows.length; r++){
+    const excelRow = r+1; // baris 1 = header
+    const ref = totalColLetter + excelRow;
+    ws1[ref] = { t:'n', f: `SUM(${firstMonthLetter}${excelRow}:${lastMonthLetter}${excelRow})`, v: rows[r][totalColIdx] };
+  }
+
   XLSX.utils.book_append_sheet(wb, ws1, 'Rekap ' + ui.year);
 
   // Sheet 2: Laba Rugi (current mode/period)
