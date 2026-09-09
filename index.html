@@ -13,9 +13,13 @@
 <meta name="theme-color" content="#123B82">
 <meta name="mobile-web-app-capable" content="yes">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<!-- Firebase (Firestore + Anonymous Auth) — dipakai supaya data dan daftar
+     pengguna sinkron di semua perangkat, bukan hanya tersimpan lokal per
+     browser. Lihat FIREBASE_CONFIG di bawah untuk cara mengisi kredensial
+     proyek Firebase Anda sendiri. -->
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
 <script>
 /* Service worker registration only — kept minimal and pointed at a real
    sw.js file (not a blob: URL) so the installed app keeps working across
@@ -394,6 +398,92 @@ if('serviceWorker' in navigator && location.protocol.indexOf('http')===0){
 
 <script>
 /* =========================================================
+   FIREBASE (sinkron data lintas perangkat)
+   =========================================================
+   1. Buat proyek gratis di https://console.firebase.google.com
+   2. Aktifkan "Firestore Database" (mode production) dan
+      "Authentication" -> Sign-in method -> Anonymous -> Enable.
+   3. Buka Project settings -> General -> "Your apps" -> Web app,
+      salin objek config lalu tempel menggantikan nilai di bawah ini.
+   4. Di Firestore -> Rules, tempel:
+        rules_version = '2';
+        service cloud.firestore {
+          match /databases/{database}/documents {
+            match /buku_kas/{docId} {
+              allow read, write: if request.auth != null;
+            }
+          }
+        }
+   Jika FIREBASE_CONFIG dibiarkan seperti contoh (belum diisi), aplikasi
+   otomatis berjalan mode lokal saja (seperti sebelumnya, tidak sinkron). */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyDKoNZsGEbC-1XChjxjqx74zBbtcBvh6Io",
+  authDomain: "laporan-keuangan-dini.firebaseapp.com",
+  projectId: "laporan-keuangan-dini",
+  storageBucket: "laporan-keuangan-dini.firebasestorage.app",
+  messagingSenderId: "307095293234",
+  appId: "1:307095293234:web:179638547da1d0dc391b2b"
+};
+const FIREBASE_ENABLED = !!(FIREBASE_CONFIG.apiKey && !FIREBASE_CONFIG.apiKey.startsWith('GANTI'));
+
+let fbAuth = null, fbDb = null;
+if(FIREBASE_ENABLED){
+  try{
+    firebase.initializeApp(FIREBASE_CONFIG);
+    fbAuth = firebase.auth();
+    fbDb = firebase.firestore();
+    fbDb.enablePersistence({synchronizeTabs:true}).catch(()=>{ /* multi-tab or unsupported browser — ignore */ });
+  }catch(e){ console.error('Firebase init error', e); }
+}
+
+let fbAuthReadyPromise = null;
+function ensureFirebaseAuth(){
+  if(!FIREBASE_ENABLED) return Promise.resolve(false);
+  if(fbAuth.currentUser) return Promise.resolve(true);
+  if(fbAuthReadyPromise) return fbAuthReadyPromise;
+  fbAuthReadyPromise = new Promise((resolve)=>{
+    const unsub = fbAuth.onAuthStateChanged(user=>{
+      if(user){ unsub(); resolve(true); }
+    });
+    fbAuth.signInAnonymously().catch(err=>{
+      console.error('Firebase anonymous sign-in gagal', err);
+      unsub();
+      resolve(false);
+    });
+  });
+  return fbAuthReadyPromise;
+}
+
+let lastSyncedLedgerJSON = null;
+let unsubscribeLedger = null, unsubscribeAuthDoc = null;
+function attachRealtimeSync(){
+  if(!FIREBASE_ENABLED) return;
+  if(unsubscribeLedger) unsubscribeLedger();
+  unsubscribeLedger = fbDb.collection('buku_kas').doc('ledger').onSnapshot({includeMetadataChanges:true}, snap=>{
+    if(snap.metadata.hasPendingWrites) return; // gema dari tulisan kita sendiri, sudah tercermin di layar
+    if(!snap.exists) return;
+    const data = snap.data();
+    if(!data || !data.state) return;
+    const incoming = JSON.stringify(data.state);
+    if(incoming === lastSyncedLedgerJSON) return; // tidak ada perubahan baru dari perangkat lain
+    lastSyncedLedgerJSON = incoming;
+    state = data.state;
+    if(!state.sptBadan) state.sptBadan = {};
+    localSet(STORAGE_KEY, JSON.stringify(state));
+    render();
+    const el = document.getElementById('lastsaved');
+    if(el) el.textContent = 'diperbarui dari perangkat lain ' + new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'});
+  }, err=> console.error('ledger snapshot error', err));
+
+  if(unsubscribeAuthDoc) unsubscribeAuthDoc();
+  unsubscribeAuthDoc = fbDb.collection('buku_kas').doc('auth').onSnapshot(snap=>{
+    if(!snap.exists) return;
+    const data = snap.data();
+    if(Array.isArray(data.users)) localSet(AUTH_KEY, JSON.stringify(data.users));
+  }, err=> console.error('auth snapshot error', err));
+}
+
+/* =========================================================
    DATA LAYER
    ========================================================= */
 const MONTHS = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agt','Sep','Okt','Nov','Des'];
@@ -410,16 +500,20 @@ const AUTH_KEY = 'ledger_auth_v1';
 const SESSION_KEY = 'ledger_session_v1';
 let session = { loggedIn:false };
 
+/* Simpan status login ke localStorage supaya bertahan setelah refresh/tutup
+   tab. session.loggedIn sendiri cuma variabel di memori, jadi tanpa ini
+   statusnya hilang tiap kali skrip dimuat ulang (itu sebabnya sebelumnya
+   selalu logout ketika halaman di-refresh). */
 function saveSession(username){
-  localSet(SESSION_KEY, JSON.stringify({username}));
+  localSet(SESSION_KEY, JSON.stringify({ username }));
 }
 function clearSession(){
-  localSet(SESSION_KEY, '');
+  try{ localStorage.removeItem(SESSION_KEY); }catch(e){}
 }
 function loadSession(){
   const raw = localGet(SESSION_KEY);
   if(!raw) return null;
-  try{ const s = JSON.parse(raw); return (s && s.username) ? s : null; }catch(e){ return null; }
+  try{ const data = JSON.parse(raw); return data && data.username ? data : null; }catch(e){ return null; }
 }
 
 /* Local browser storage — works when this file is opened directly (downloaded
@@ -431,41 +525,6 @@ function localGet(key){
 }
 function localSet(key, val){
   try{ localStorage.setItem(key, val); return true; }catch(e){ return false; }
-}
-
-/* ---------- Firebase (Firestore) sync ----------
-   Data lives in Firestore under buku_kas/auth and buku_kas/ledger, so it's
-   shared across every device/browser instead of being stuck on one phone.
-   localStorage is still kept as an offline cache/fallback: every load tries
-   Firestore first, and every save writes to both. If Firestore is
-   unreachable (offline, blocked, misconfigured) the app quietly falls back
-   to local-only storage instead of breaking. */
-const firebaseConfig = {
-  apiKey: "AIzaSyDKoNZsGEbC-1XChjxjqx74zBbtcBvh6Io",
-  authDomain: "laporan-keuangan-dini.firebaseapp.com",
-  projectId: "laporan-keuangan-dini",
-  storageBucket: "laporan-keuangan-dini.firebasestorage.app",
-  messagingSenderId: "307095293234",
-  appId: "1:307095293234:web:179638547da1d0dc391b2b"
-};
-let fbAuth = null, fbDb = null, fbReady = false, fbSignInPromise = null;
-try{
-  if(typeof firebase !== 'undefined'){
-    firebase.initializeApp(firebaseConfig);
-    fbAuth = firebase.auth();
-    fbDb = firebase.firestore();
-  }
-}catch(e){ console.error('Firebase init failed', e); }
-
-function ensureFirebaseAuth(){
-  if(!fbAuth || !fbDb) return Promise.resolve(false);
-  if(fbAuth.currentUser){ fbReady = true; return Promise.resolve(true); }
-  if(!fbSignInPromise){
-    fbSignInPromise = fbAuth.signInAnonymously()
-      .then(()=>{ fbReady = true; return true; })
-      .catch((e)=>{ console.error('Firebase anonymous sign-in failed', e); fbReady = false; return false; });
-  }
-  return fbSignInPromise;
 }
 
 async function sha256Hex(text){
@@ -488,17 +547,21 @@ async function sha256Hex(text){
   return h1.toString(16).padStart(8,'0') + h2.toString(16).padStart(8,'0');
 }
 async function loadAuthList(){
-  const ok = await ensureFirebaseAuth();
-  if(ok){
+  if(FIREBASE_ENABLED){
     try{
-      const snap = await fbDb.collection('buku_kas').doc('auth').get();
-      if(snap.exists){
-        const data = snap.data();
-        const list = Array.isArray(data.users) ? data.users : [];
-        localSet(AUTH_KEY, JSON.stringify(list));
-        return list;
+      const ok = await ensureFirebaseAuth();
+      if(ok){
+        const snap = await fbDb.collection('buku_kas').doc('auth').get();
+        if(snap.exists){
+          const data = snap.data();
+          if(Array.isArray(data.users)){
+            localSet(AUTH_KEY, JSON.stringify(data.users)); // cache lokal untuk mode offline
+            return data.users;
+          }
+        }
+        return []; // dokumen belum ada di cloud — belum ada akun di manapun
       }
-    }catch(e){ console.error('Firestore loadAuthList failed, using local cache', e); }
+    }catch(e){ console.error('loadAuthList: gagal ambil dari cloud, pakai cache lokal', e); }
   }
   const raw = localGet(AUTH_KEY);
   if(!raw) return [];
@@ -510,12 +573,18 @@ async function loadAuthList(){
   }catch(e){ return []; }
 }
 async function saveAuthList(list){
-  localSet(AUTH_KEY, JSON.stringify(list));
-  const ok = await ensureFirebaseAuth();
-  if(ok){
+  localSet(AUTH_KEY, JSON.stringify(list)); // cache lokal selalu diperbarui
+  if(FIREBASE_ENABLED){
     try{
-      await fbDb.collection('buku_kas').doc('auth').set({ users:list, updatedAt: Date.now() });
-    }catch(e){ console.error('Firestore saveAuthList failed, saved locally only', e); return false; }
+      const ok = await ensureFirebaseAuth();
+      if(ok){
+        await fbDb.collection('buku_kas').doc('auth').set({ users: list });
+        return true;
+      }
+    }catch(e){
+      console.error('saveAuthList: gagal simpan ke cloud', e);
+      toast('Akun tersimpan lokal saja — belum tersinkron ke cloud');
+    }
   }
   return true;
 }
@@ -560,9 +629,26 @@ let ui = {
   month: 11,           // 0-indexed, default Des
   reportMode: 'bulan',  // bulan | ytd | tahun
   kindFilter: 'all',
+  pajakTab: 'pph21',    // pph21 | pph25 | pph29 | sewa
 };
 
 function uid(){ return 'a' + Math.random().toString(36).slice(2,10); }
+
+/* Dipakai setiap kali sebuah sel input selesai diisi (blur) dan tabel perlu
+   digambar ulang supaya kolom Total / baris L/R ikut ter-update. Karena
+   render ulang mengganti seluruh innerHTML, posisi scroll (baik scroll
+   halaman maupun scroll tabel ke kanan) akan direset browser ke atas/kiri
+   kalau tidak disimpan & dikembalikan manual seperti ini. */
+function rerenderPreserveScroll(renderFn){
+  const scrollBox = document.querySelector('#main .table-scroll');
+  const boxLeft = scrollBox ? scrollBox.scrollLeft : 0;
+  const boxTop = scrollBox ? scrollBox.scrollTop : 0;
+  const winX = window.scrollX, winY = window.scrollY;
+  renderFn();
+  const newBox = document.querySelector('#main .table-scroll');
+  if(newBox){ newBox.scrollLeft = boxLeft; newBox.scrollTop = boxTop; }
+  window.scrollTo(winX, winY);
+}
 
 function seedState(){
   const rows = [
@@ -592,6 +678,7 @@ function seedState(){
     ['THR','biaya',[0,0,97500000,0,0,0,0,0,0,0,0,0]],
     ['Zakat','biaya',[0,0,7233000,0,0,0,0,0,0,0,0,0]],
     ['Qurban','biaya',[0,0,0,0,25000000,0,0,0,0,0,0,0]],
+    ['Iuran CSR','biaya',[0,0,0,0,0,0,0,0,0,0,0,0]],
     ['BPJS Kesehatan','biaya',[3732468,3900416,3900416,3900416,3900416,3684384,3684384,3684384,3684000,3468000,3468000,3468000]],
     ['BPJS Ketenagakerjaan','biaya',[4391952,4134000,4134000,4134000,4134000,3905040,3905040,3905040,3905040,3676080,3676080,3676080]],
     ['Talangan Biaya Diklat','biaya',[0,0,0,0,0,0,0,0,0,0,0,0]],
@@ -606,6 +693,9 @@ function seedState(){
     ['PNBP','biaya',[5000000,2000000,5000000,3000000,3000000,5000000,4000000,5000000,5000000,5000000,5000000,3000000]],
     ['Billing Approval PNBP','biaya',[8800000,0,0,0,0,0,0,0,0,0,0,0]],
     ['Telkom','biaya',[0,0,932092,932092,900000,926183,923267,923822,923267,927394,928881,934208]],
+    ['Server Monitoring','biaya',[0,0,0,0,0,0,0,0,0,0,0,0]],
+    ['Seragam Kantor','biaya',[0,0,0,0,0,0,0,0,0,0,0,0]],
+    ['Iuran Denda Pajak Th Badan 2019 [Yayasan]','biaya',[0,0,0,0,0,0,0,0,0,0,0,0]],
     ['Pinjaman Diterima','neraca_kredit',[0,0,0,0,0,0,0,0,78600000,0,0,0]],
     ['Biaya Provisi/Adm/Materai/Asuransi','biaya',[0,0,0,0,0,0,0,0,0,0,0,0]],
     ['Biaya Pembukaan Rekening Pinjaman','biaya',[0,0,0,0,0,0,0,0,0,0,0,0]],
@@ -625,35 +715,113 @@ function seedState(){
     accounts.push({id,name,kind});
     values[id] = { 2025: vals.slice() };
   });
-  return { accounts, values, taxBadan:{} };
+  const sptBadan = {
+    2025: {
+      pkpSebelumFasilitas: 715326164,
+      pkp: 715326000,
+      tarifKeterangan: 'Tarif Fasilitas sebagaimana Pasal 31E ayat (1) UU PPh',
+      pphTerutang: 78685860,
+      kreditPihakLain: 621600,
+      angsuranPph25Setahun: 70247544,
+      stpPph25: 0,
+      statusSpt: 'Normal',
+      tanggalTerima: '05 Maret 2026',
+    }
+  };
+  return { accounts, values, sptBadan };
 }
 
-function emptyState(){ return { accounts:[], values:{}, taxBadan:{} }; }
+/* Daftar akun baku (nama + jenis) yang WAJIB ada di aplikasi, diambil dari
+   seluruh baris pada template Excel Rekap Cost (2025 & 2026). Dipisah dari
+   seedState() supaya bisa dipakai juga untuk "menyusulkan" akun yang belum
+   ada pada data yang SUDAH tersimpan (lihat ensureDefaultAccounts di bawah) —
+   karena seedState() hanya jalan sekali saat aplikasi masih kosong, akun baru
+   yang ditambahkan ke daftar ini tidak akan otomatis muncul di data lama. */
+function defaultAccountDefs(){
+  return [
+    ['Honor','biaya'], ['Gaji','biaya'], ['Sodakoh','biaya'], ['Kendaraan Motor','biaya'],
+    ['Cicilan Kendaraan Mobil','biaya'], ['Pajak Mobil','biaya'], ['Konsumsi','biaya'],
+    ['Materai','biaya'], ['Cetakan','biaya'], ['VPN Telkom','biaya'], ['Catering','biaya'],
+    ['MPN','biaya'], ['Sinking Fund Cicilan BRI','biaya'], ['Website Development','biaya'],
+    ['Biaya Cek Materai','biaya'], ['Kas Kecil','biaya'], ['Sertifikat Nidi and SLO','biaya'],
+    ['Biaya Pengobatan','biaya'], ['Simpanan Gedung','biaya'], ['Peralatan Kantor Pengajuan','biaya'],
+    ['Kertas Sertifikat','biaya'], ['Pembayaran PAM','biaya'], ['THR','biaya'], ['Zakat','biaya'],
+    ['Qurban','biaya'], ['Iuran CSR','biaya'], ['BPJS Kesehatan','biaya'], ['BPJS Ketenagakerjaan','biaya'],
+    ['Talangan Biaya Diklat','biaya'], ['Pajak Sewa Gedung','biaya'], ['PPh Badan Akhir Tahun','biaya'],
+    ['PPh26 Badan Per Bulan','biaya'], ['PPh Ps.21','biaya'], ['Pembayaran Daya PLN','biaya'],
+    ['Perpanjang Akta','biaya'], ['Biaya Admin Bank','biaya'], ['Refund','biaya'], ['PNBP','biaya'],
+    ['Billing Approval PNBP','biaya'], ['Telkom','biaya'], ['Server Monitoring','biaya'],
+    ['Seragam Kantor','biaya'], ['Iuran Denda Pajak Th Badan 2019 [Yayasan]','biaya'],
+    ['Biaya Provisi/Adm/Materai/Asuransi','biaya'], ['Biaya Pembukaan Rekening Pinjaman','biaya'],
+    ['Biaya BPHTB & Pajak Pembelian Ruko','biaya'], ['Sertifikat ISO 9001:2015','biaya'],
+    ['PPS','biaya'], ['STP Pajak','biaya'], ['Pembelian MAP Diklat','biaya'],
+    ['Pembayaran Cek','biaya'], ['Biaya Lain-lain','biaya'],
+  ];
+}
 
-function getTaxBadanInput(year){
-  if(!state.taxBadan) state.taxBadan = {};
-  if(!state.taxBadan[year]) state.taxBadan[year] = { koreksiPositif:0, koreksiNegatif:0, kreditPihakLain:0, angsuranDisetor:0 };
-  return state.taxBadan[year];
+/* Beberapa akun punya nama yang berbeda-beda antar tahun di file Excel
+   sumbernya sendiri (mis. 2026 menulis "PAM" & "PLN", sedangkan 2025 menulis
+   "Pembayaran PAM" & "Pembayaran Daya PLN"; ada juga selisih tanda baca
+   seperti koma/garis-miring/tanda-&, dan beberapa salah ketik seperti "ahli"
+   vs "alih"). Alias ini membuat nama-nama itu dikenali sebagai akun yang
+   SAMA — baik saat pencocokan akun default maupun saat impor Excel —
+   supaya tidak muncul akun duplikat yang bikin nominal dobel-hitung. */
+const ACCOUNT_NAME_ALIASES = {
+  'pam': 'pembayaran pam',
+  'pln': 'pembayaran daya pln',
+  'pph 21': 'pph ps 21',
+  'by pengobatan': 'biaya pengobatan',
+  'pph26 badan perbulan': 'pph26 badan per bulan',
+  'pinjaman': 'pinjaman diterima',
+  'dp aset ahli kepemilikan ruko': 'dp aset alih kepemilikan ruko',
+};
+function normalizeAccName(name){
+  // Tanda baca seperti . : , / & diganti SPASI (bukan dihapus polos) supaya
+  // "Biaya Admin.Bank" match dengan "Biaya Admin Bank", "Biaya BPHTB, Pajak
+  // pembelian Ruko" match dengan "Biaya BPHTB & Pajak Pembelian Ruko", dst.
+  const n = (name||'').toString().trim().toLowerCase()
+    .replace(/[.:,/&]/g,' ').replace(/\s+/g,' ').trim();
+  return ACCOUNT_NAME_ALIASES[n] || n;
 }
-function setTaxBadanField(year, field, value){
-  const t = getTaxBadanInput(year);
-  t[field] = value;
-  scheduleSave();
+
+/* Menambahkan akun-akun baku yang belum ada ke data yang SUDAH tersimpan,
+   tanpa mengubah/menghapus data yang sudah diisi. Dipanggil setiap kali
+   aplikasi dibuka dengan data lama (bukan data kosong/baru). */
+function ensureDefaultAccounts(){
+  if(!state || !Array.isArray(state.accounts)) return false;
+  const existing = new Set(state.accounts.map(a=>normalizeAccName(a.name)));
+  let added = false;
+  defaultAccountDefs().forEach(([name,kind])=>{
+    const key = normalizeAccName(name);
+    if(existing.has(key)) return;
+    const id = uid();
+    state.accounts.push({id, name, kind});
+    state.values[id] = state.values[id] || {};
+    existing.add(key);
+    added = true;
+  });
+  return added;
 }
+
+function emptyState(){ return { accounts:[], values:{}, sptBadan:{} }; }
 
 async function loadState(){
-  const ok = await ensureFirebaseAuth();
-  if(ok){
+  if(FIREBASE_ENABLED){
     try{
-      const snap = await fbDb.collection('buku_kas').doc('ledger').get();
-      if(snap.exists){
-        const data = snap.data();
-        if(data && data.accounts){
-          localSet(STORAGE_KEY, JSON.stringify(data));
-          return data;
+      const ok = await ensureFirebaseAuth();
+      if(ok){
+        const snap = await fbDb.collection('buku_kas').doc('ledger').get();
+        if(snap.exists){
+          const data = snap.data();
+          if(data && data.state){
+            lastSyncedLedgerJSON = JSON.stringify(data.state);
+            localSet(STORAGE_KEY, JSON.stringify(data.state)); // cache lokal untuk mode offline
+            return data.state;
+          }
         }
+        return null; // belum ada data di cloud sama sekali
       }
-    }catch(e){ console.error('Firestore loadState failed, using local cache', e); }
+    }catch(e){ console.error('loadState: gagal ambil dari cloud, pakai cache lokal', e); }
   }
   const raw = localGet(STORAGE_KEY);
   if(!raw) return null;
@@ -666,19 +834,29 @@ function scheduleSave(){
   saveTimer = setTimeout(doSave, 350);
 }
 async function doSave(){
-  const ok = localSet(STORAGE_KEY, JSON.stringify(state));
+  const ok = localSet(STORAGE_KEY, JSON.stringify(state)); // cache lokal selalu diperbarui dulu
   const el = document.getElementById('lastsaved');
-  const fbOk = await ensureFirebaseAuth();
-  let cloudOk = false;
-  if(fbOk){
+  if(FIREBASE_ENABLED){
     try{
-      await fbDb.collection('buku_kas').doc('ledger').set(state);
-      cloudOk = true;
-    }catch(e){ console.error('Firestore save failed, saved locally only', e); }
+      const authOk = await ensureFirebaseAuth();
+      if(!authOk) throw new Error('Firebase auth tidak siap');
+      lastSyncedLedgerJSON = JSON.stringify(state);
+      await fbDb.collection('buku_kas').doc('ledger').set({
+        state: state,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedBy: session.username || ''
+      });
+      if(el){ el.textContent = 'tersinkron ' + new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}); }
+      return;
+    }catch(e){
+      console.error('doSave: gagal sinkron ke cloud', e);
+      if(el){ el.textContent = 'tersimpan lokal (belum tersinkron)'; }
+      toast('Belum tersinkron ke cloud — periksa koneksi internet');
+      return;
+    }
   }
   if(ok){
-    const label = cloudOk ? 'tersimpan (cloud) ' : 'tersimpan (lokal) ';
-    if(el){ el.textContent = label + new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}); }
+    if(el){ el.textContent = 'tersimpan ' + new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'}); }
   } else {
     toast('Gagal menyimpan — coba lagi');
   }
@@ -696,6 +874,19 @@ function setVal(accountId, year, monthIdx, num){
 function accountsByKind(kind){
   return state.accounts.filter(a => kind==='all' ? true : a.kind===kind);
 }
+/* Beberapa akun neraca (Pinjaman Diterima, DP Aset Alih Kepemilikan Ruko)
+   secara historis berada di baris "biaya" (baris 6-55) pada file Excel
+   sumber, sehingga nilainya ikut terjumlah ke "Pengeluaran per bulan" &
+   "L/R Perbulan" di sana walau sebenarnya item neraca. Supaya angka di
+   Data & Input sama persis dengan Excel, akun-akun ini ikut disertakan
+   khusus untuk perhitungan "Pengeluaran per bulan" — TIDAK memengaruhi
+   perhitungan Neraca maupun Laba Rugi resmi di halaman lain. */
+const PENGELUARAN_EXTRA_NAMES = ['pinjaman diterima','dp aset alih kepemilikan ruko'];
+function pengeluaranTotal(year, m){
+  const biayaAccs = accountsByKind('biaya');
+  const extraAccs = state.accounts.filter(a => PENGELUARAN_EXTRA_NAMES.includes(a.name.trim().toLowerCase()));
+  return biayaAccs.reduce((s,a)=>s+sumRange(a.id,year,m,m),0) + extraAccs.reduce((s,a)=>s+sumRange(a.id,year,m,m),0);
+}
 function yearsAvailable(){
   const ys = new Set([ui.year]);
   state.accounts.forEach(a=>{
@@ -712,6 +903,75 @@ function sumRange(accountId, year, fromMonth, toMonth){
 }
 function kindTotal(kind, year, fromMonth, toMonth){
   return accountsByKind(kind).reduce((s,a)=> s + sumRange(a.id, year, fromMonth, toMonth), 0);
+}
+
+/* =========================================================
+   SPT TAHUNAN BADAN — data ringkasan per tahun pajak
+   ========================================================= */
+function emptySptRow(){
+  return {
+    pkpSebelumFasilitas: 0,
+    pkp: 0,
+    tarifKeterangan: '',
+    pphTerutang: 0,
+    kreditPihakLain: 0,
+    angsuranPph25Setahun: 0,
+    stpPph25: 0,
+    statusSpt: '',
+    tanggalTerima: '',
+  };
+}
+function getSpt(year){
+  if(!state.sptBadan) state.sptBadan = {};
+  if(!state.sptBadan[year]) state.sptBadan[year] = emptySptRow();
+  return state.sptBadan[year];
+}
+function sptKurangBayar(year){
+  const s = getSpt(year);
+  return (s.pphTerutang||0) - (s.kreditPihakLain||0) - (s.angsuranPph25Setahun||0) - (s.stpPph25||0);
+}
+function sptAngsuranTahunBerikutnya(year){
+  const s = getSpt(year);
+  return Math.round(((s.pphTerutang||0) - (s.kreditPihakLain||0)) / 12);
+}
+
+/* =========================================================
+   LAPORAN PAJAK — pencocokan akun per jenis PPh
+   ========================================================= */
+const PAJAK_META = {
+  pph21: {
+    label: 'PPh Pasal 21',
+    desc: 'Pemotongan atas penghasilan pegawai/karyawan',
+    regex: /pph\s*(pasal\s*)?21\b|pph\s*ps\.?\s*21\b/i,
+    suggestName: 'PPh Ps.21',
+  },
+  pph25: {
+    label: 'PPh 25 Badan',
+    desc: 'Angsuran bulanan PPh Badan — di pembukuan ini sebagian masih tercatat dengan nama lama "PPh 26"',
+    regex: /pph\s*(pasal\s*)?25\b|\bpph\s*25\b|pph\s*(pasal\s*)?26\b|\bpph\s*26\b/i,
+    suggestName: 'PPh25 Badan Per Bulan',
+  },
+  pph29: {
+    label: 'PPh 29 (Akhir Tahun)',
+    desc: 'Kurang bayar PPh Badan yang dilunasi sebelum SPT Tahunan disampaikan',
+    regex: /pph\s*(pasal\s*)?29\b|\bpph\s*29\b|pph\s*badan\s*akhir\s*tahun/i,
+    suggestName: 'PPh Badan Akhir Tahun',
+  },
+  sewa: {
+    label: 'PPh Final Sewa Gedung',
+    desc: 'PPh Final Pasal 4 ayat (2) atas sewa tanah/bangunan, tarif 10%',
+    regex: /pajak\s*sewa\s*gedung|sewa\s*gedung|pph\s*final.*sewa|sewa.*pph\s*final/i,
+    suggestName: 'Pajak Sewa Gedung',
+  },
+  spt: {
+    label: 'SPT Tahunan Badan',
+    desc: 'Ringkasan Penghasilan Kena Pajak, PPh Terutang, dan kurang/lebih bayar dari SPT Tahunan',
+    isForm: true,
+  },
+};
+function taxAccounts(type){
+  const re = PAJAK_META[type].regex;
+  return state.accounts.filter(a => re.test(a.name));
 }
 
 /* =========================================================
@@ -764,7 +1024,7 @@ const ICONS = {
   logout:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
   print:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>',
   user:'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>',
-  tax:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 3h9l4 4v14H6z"/><line x1="9" y1="17" x2="15" y2="9"/><circle cx="9.7" cy="9.7" r="1.1" fill="currentColor" stroke="none"/><circle cx="14.3" cy="16.3" r="1.1" fill="currentColor" stroke="none"/></svg>',
+  percent:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/></svg>',
 };
 
 /* =========================================================
@@ -775,7 +1035,7 @@ const VIEWS = [
   {id:'input', label:'Data & Input', short:'Input', icon:'table'},
   {id:'labarugi', label:'Laba Rugi', short:'Laba Rugi', icon:'doc'},
   {id:'neraca', label:'Neraca', short:'Neraca', icon:'scale'},
-  {id:'pajak', label:'Laporan Pajak', short:'Pajak', icon:'tax', bottomNav:false},
+  {id:'pajak', label:'Laporan Pajak', short:'Pajak', icon:'percent'},
   {id:'io', label:'Import / Export', short:'Impor', icon:'swap'},
 ];
 function renderNav(){
@@ -789,8 +1049,7 @@ function renderNav(){
 
   const bottomNav = document.getElementById('mobile-bottomnav');
   if(bottomNav){
-    const bottomViews = VIEWS.filter(v=> v.bottomNav!==false);
-    bottomNav.innerHTML = bottomViews.map(v=>`
+    bottomNav.innerHTML = VIEWS.map(v=>`
       <button data-view="${v.id}" class="${ui.view===v.id?'active':''}">${ICONS[v.icon]}<span>${v.short}</span></button>
     `).join('');
     bottomNav.querySelectorAll('button').forEach(b=>{
@@ -805,19 +1064,12 @@ function showMobileMoreSheet(){
   overlay.innerHTML = `
     <div class="modal sheet">
       <div class="sheet-handle"></div>
-      <button class="btn" id="sheet-pajak" style="justify-content:flex-start;gap:10px;">${ICONS.tax} Laporan Pajak</button>
       <button class="btn" id="sheet-manage-users" style="justify-content:flex-start;gap:10px;">${ICONS.user} Kelola Pengguna</button>
       <button class="btn danger" id="sheet-logout" style="justify-content:flex-start;gap:10px;">${ICONS.logout} Keluar</button>
     </div>
   `;
   document.body.appendChild(overlay);
   overlay.addEventListener('click', (e)=>{ if(e.target===overlay) overlay.remove(); });
-  overlay.querySelector('#sheet-pajak').addEventListener('click', ()=>{
-    overlay.remove();
-    ui.view = 'pajak';
-    render();
-    window.scrollTo(0,0);
-  });
   overlay.querySelector('#sheet-manage-users').addEventListener('click', ()=>{
     overlay.remove();
     showManageUsersModal();
@@ -867,9 +1119,11 @@ function viewRingkasan(){
     .sort((a,b)=>b.total-a.total).slice(0,6);
 
   main.innerHTML = `
-    <div class="topline">
-      <div><h1>Ringkasan</h1><div class="desc">Ikhtisar keuangan tahun berjalan</div></div>
-      ${yearSwitcher()}
+    <div class="sticky-head">
+      <div class="topline" style="margin-bottom:0;">
+        <div><h1>Ringkasan</h1><div class="desc">Ikhtisar keuangan tahun berjalan</div></div>
+        ${yearSwitcher()}
+      </div>
     </div>
 
     <div class="cardrow">
@@ -918,19 +1172,56 @@ function monthRangeForMode(){
   return [0,11];
 }
 
+/* Warna baris persis seperti file Excel sumber (per nama akun), supaya
+   tampilan tabel Data & Input sama persis dengan template Excel. */
+const EXCEL_ROW_COLORS = {
+  'pendapatan usaha':'00B0F0','gaji':'FFFF00','sodakoh':'CCC1DA','cicilan kendaraan mobil':'92D050',
+  'konsumsi':'00B050','materai':'D99694','cetakan':'00B050','vpn telkom':'B3A2C7','catering':'FCD5B5',
+  'sinking fund cicilan bri':'FFC000','website development':'DDD9C3','kas kecil':'F79646',
+  'biaya pengobatan':'D9D9D9','simpanan gedung':'FAC090','pembayaran pam':'4BACC6','thr':'DDD9C3',
+  'zakat':'C3D69B','qurban':'948A54','bpjs kesehatan':'77933C','bpjs ketenagakerjaan':'C0504D',
+  'pph badan akhir tahun':'00B0F0','pph26 badan per bulan':'C4BD97','pembayaran daya pln':'D99694',
+  'biaya admin bank':'9BBB59','pnbp':'CCC1DA','billing approval pnbp':'DDD9C3','telkom':'B3A2C7',
+  'pinjaman diterima':'E6B9B8','pembelian map diklat':'FFFF00','pembayaran cek':'92D050',
+  'biaya lain-lain':'4F81BD'
+};
+/* Warna gelap dari palet di atas butuh teks putih supaya tetap terbaca. */
+const EXCEL_ROW_DARK = ['00B050','C0504D','77933C','948A54','9BBB59','4F81BD','4BACC6'];
+function excelRowStyle(name){
+  const c = EXCEL_ROW_COLORS[(name||'').trim().toLowerCase()];
+  if(!c) return '';
+  const dark = EXCEL_ROW_DARK.includes(c);
+  return `background:#${c};${dark?'color:#fff;':''}`;
+}
+
+/* "L/R Perbulan" = Pendapatan Usaha dikurangi TOTAL SEMUA biaya bulan itu.
+   Sama persis dengan baris "L/R" di bagian Rangkuman Excel. */
+function lrPerbulanMonthly(year){
+  const pendapatanAccs = accountsByKind('pendapatan');
+  const out = [];
+  for(let m=0;m<12;m++){
+    const pend = pendapatanAccs.reduce((s,a)=>s+sumRange(a.id,year,m,m),0);
+    const biaya = pengeluaranTotal(year, m);
+    out.push(pend - biaya);
+  }
+  return out;
+}
+
 function viewInput(){
   const main = document.getElementById('main');
   const filtered = ui.kindFilter==='all' ? state.accounts : state.accounts.filter(a=>a.kind===ui.kindFilter);
 
   main.innerHTML = `
-    <div class="topline">
-      <div><h1>Data &amp; Input</h1><div class="desc">Tambah, ubah, dan hapus akun serta nominal bulanan</div></div>
-      <div class="controls">
-        ${yearSwitcher()}
-        <button class="btn primary" id="btn-quick-save">${ICONS.save} Simpan</button>
-        <button class="btn" id="btn-quick-export">${ICONS.download} Export Excel</button>
-        <label class="btn" for="quick-import-file">${ICONS.upload} Import Excel</label>
-        <input type="file" id="quick-import-file" accept=".xlsx,.xls" style="display:none;">
+    <div class="sticky-head">
+      <div class="topline" style="margin-bottom:0;">
+        <div><h1>Data &amp; Input</h1><div class="desc">Tambah, ubah, dan hapus akun serta nominal bulanan</div></div>
+        <div class="controls">
+          ${yearSwitcher()}
+          <button class="btn primary" id="btn-quick-save">${ICONS.save} Simpan</button>
+          <button class="btn" id="btn-quick-export">${ICONS.download} Export Excel</button>
+          <label class="btn" for="quick-import-file">${ICONS.upload} Import Excel</label>
+          <input type="file" id="quick-import-file" accept=".xlsx,.xls" style="display:none;">
+        </div>
       </div>
     </div>
 
@@ -959,6 +1250,7 @@ function viewInput(){
             ${filtered.map(a=>renderInputRow(a)).join('')}
           </tbody>
           <tfoot>
+            ${(ui.kindFilter==='all' || ui.kindFilter==='biaya') ? '' : `
             <tr>
               <td style="text-align:left;">Total (${ui.kindFilter==='all'?'semua akun':KIND_META[ui.kindFilter].label})</td>
               ${(()=>{
@@ -968,12 +1260,70 @@ function viewInput(){
               })()}
               <td class="num" style="text-align:right;padding:10px 8px;">${fmtNum(filtered.reduce((s,a)=>s+sumRange(a.id,ui.year,0,11),0))}</td>
               <td></td>
+            </tr>`}
+            ${(ui.kindFilter==='all' || ui.kindFilter==='biaya') ? (()=>{
+              const lr = lrPerbulanMonthly(ui.year);
+              const lrTotal = lr.reduce((s,v)=>s+v,0);
+              const peng = [];
+              for(let m=0;m<12;m++) peng.push(pengeluaranTotal(ui.year, m));
+              const pengTotal = peng.reduce((s,v)=>s+v,0);
+              return `
+            <tr>
+              <td style="text-align:left;background:#BFBFBF;font-weight:600;">L/R Perbulan</td>
+              ${lr.map(v=>`<td class="num" style="text-align:right;padding:10px 8px;background:#BFBFBF;font-weight:600;${v<0?'color:var(--rust);':''}">${fmtNum(v)}</td>`).join('')}
+              <td class="num" style="text-align:right;padding:10px 8px;background:#BFBFBF;font-weight:600;${lrTotal<0?'color:var(--rust);':''}">${fmtNum(lrTotal)}</td>
+              <td style="background:#BFBFBF;"></td>
             </tr>
+            <tr>
+              <td style="text-align:left;background:#4A4A4A;color:#fff;font-weight:700;">Pengeluaran per bulan</td>
+              ${peng.map(v=>`<td class="num" style="text-align:right;padding:10px 8px;background:#4A4A4A;color:#fff;font-weight:700;">${fmtNum(v)}</td>`).join('')}
+              <td class="num" style="text-align:right;padding:10px 8px;background:#4A4A4A;color:#fff;font-weight:700;">${fmtNum(pengTotal)}</td>
+              <td style="background:#4A4A4A;"></td>
+            </tr>`;
+            })() : ''}
           </tfoot>
         </table>
       </div>
       `}
     </div>
+    ${(ui.kindFilter==='all' || ui.kindFilter==='biaya') ? (()=>{
+      const pendapatanAccs = accountsByKind('pendapatan');
+      const pend = [], peng = [], lr = [];
+      for(let m=0;m<12;m++){
+        const p = pendapatanAccs.reduce((s,a)=>s+sumRange(a.id,ui.year,m,m),0);
+        const b = pengeluaranTotal(ui.year, m);
+        pend.push(p); peng.push(b); lr.push(p-b);
+      }
+      const pendTotal = pend.reduce((s,v)=>s+v,0);
+      const pengTotal = peng.reduce((s,v)=>s+v,0);
+      const lrTotal = lr.reduce((s,v)=>s+v,0);
+      const rangkumanRow = (label, vals, total, style) => `
+        <tr>
+          <td style="text-align:left;padding:10px 8px;${style||''}">${label}</td>
+          ${vals.map(v=>`<td class="num" style="text-align:right;padding:10px 8px;${style||''}${v<0?'color:var(--rust);':''}">${fmtNum(v)}</td>`).join('')}
+          <td class="num" style="text-align:right;padding:10px 8px;${style||''}${total<0?'color:var(--rust);':''}">${fmtNum(total)}</td>
+        </tr>`;
+      return `
+    <div class="panel" style="padding:0;">
+      <div style="padding:18px 22px 4px;">
+        <h2>Rangkuman</h2>
+      </div>
+      <div class="table-scroll">
+        <table class="ledger">
+          <thead><tr>
+            <th></th>
+            ${MONTHS.map(m=>`<th>${m}</th>`).join('')}
+            <th>Total</th>
+          </tr></thead>
+          <tbody>
+            ${rangkumanRow('Pendapatan ' + ui.year, pend, pendTotal)}
+            ${rangkumanRow('Pengeluaran per bulan', peng, pengTotal)}
+            ${rangkumanRow('L/R', lr, lrTotal, 'background:#FFFF00;font-weight:700;')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+    })() : ''}
     <div class="panel hint" style="font-size:12px;color:var(--ink-faint);">
       Klik sel angka untuk mengubah nilai bulanan. Gunakan ikon pensil untuk mengganti nama/jenis akun, dan ikon tempat sampah untuk menghapus akun beserta seluruh datanya.
     </div>
@@ -1000,7 +1350,7 @@ function viewInput(){
       const n = parseNum(e.target.value);
       setVal(id, ui.year, m, n);
       scheduleSave();
-      viewInput();
+      rerenderPreserveScroll(viewInput);
     });
     inp.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.target.blur(); } });
   });
@@ -1015,8 +1365,9 @@ function viewInput(){
 function renderInputRow(a){
   const vals = getVals(a.id, ui.year);
   const total = vals.reduce((s,v)=>s+(v||0),0);
+  const rowStyle = excelRowStyle(a.name);
   return `
-    <tr>
+    <tr${rowStyle?` style="${rowStyle}"`:''}>
       <td class="name">${escapeHtml(a.name)}<span class="kind kind-${a.kind}">${KIND_META[a.kind].label}</span></td>
       ${vals.map((v,m)=>`<td><input class="cell" type="text" inputmode="numeric" data-acc="${a.id}" data-m="${m}" value="${v?fmtNum(v):''}" placeholder="0"></td>`).join('')}
       <td class="rowtotal num" style="text-align:right;padding:9px 8px;">${fmtNum(total)}</td>
@@ -1303,221 +1654,325 @@ function viewNeraca(){
 }
 
 /* =========================================================
-   VIEW: LAPORAN PAJAK (PPh 21 & PPh 26)
+   VIEW: LAPORAN PAJAK (PPh 21 / PPh 26)
    ========================================================= */
-const PPH21_RE = /pph\s*(pasal\s*|ps\.?\s*)?21\b/i;
-const PPH26_RE = /pph\s*(pasal\s*|ps\.?\s*)?26\b/i;
-
-function taxAccounts(regex){
-  return state.accounts.filter(a=> regex.test(a.name));
+function renderPajakRow(a){
+  const vals = getVals(a.id, ui.year);
+  const total = vals.reduce((s,v)=>s+(v||0),0);
+  return `
+    <tr>
+      <td class="name">${escapeHtml(a.name)}</td>
+      ${vals.map((v,m)=>`<td><input class="cell" type="text" inputmode="numeric" data-acc="${a.id}" data-m="${m}" value="${v?fmtNum(v):''}" placeholder="0"></td>`).join('')}
+      <td class="rowtotal num" style="text-align:right;padding:9px 8px;">${fmtNum(total)}</td>
+    </tr>
+  `;
 }
 
-function taxSection(title, regex){
-  const accs = taxAccounts(regex);
-  const monthly = new Array(12).fill(0);
+function buildPajakRows(type){
+  const meta = PAJAK_META[type];
+  const accs = taxAccounts(type);
+  const rows = [[('LAPORAN ' + meta.label).toUpperCase(), 'Tahun ' + ui.year], []];
+  rows.push(['Akun', ...MONTHS, 'Total']);
   accs.forEach(a=>{
     const vals = getVals(a.id, ui.year);
-    for(let m=0;m<12;m++) monthly[m] += vals[m]||0;
+    rows.push([a.name, ...vals, vals.reduce((s,v)=>s+(v||0),0)]);
   });
-  const total = monthly.reduce((s,v)=>s+v,0);
-
-  if(accs.length===0){
-    return `
-      <div class="panel">
-        <h2>${title}</h2>
-        <div class="emptynote">Belum ada akun yang cocok untuk ${title}. Tambahkan akun di <b>Data & Input</b> dengan nama yang memuat "${title}" (mis. "${title}") agar otomatis muncul di sini.</div>
-      </div>
-    `;
-  }
-
-  return `
-    <div class="panel">
-      <h2>${title}</h2>
-      <div style="font-size:12px;color:var(--ink-faint);margin:-8px 0 14px;">Dari akun: ${accs.map(a=>escapeHtml(a.name)).join(', ')}</div>
-      <div class="table-scroll" style="max-height:none;padding:0;margin:0;overflow-x:auto;">
-        <table class="ledger">
-          <thead><tr><th>Bulan</th><th>Nominal</th></tr></thead>
-          <tbody>
-            ${MONTHS.map((m,i)=>`<tr><td class="name">${MONTHS_FULL(i)}</td><td class="num" style="text-align:right;padding:9px 8px;">${fmtRp(monthly[i])}</td></tr>`).join('')}
-          </tbody>
-          <tfoot><tr><td style="text-align:left;">Total Setahun</td><td class="num" style="text-align:right;padding:10px 8px;">${fmtRp(total)}</td></tr></tfoot>
-        </table>
-      </div>
-    </div>
-  `;
+  const colTotals = new Array(12).fill(0);
+  accs.forEach(a=>{ const v = getVals(a.id, ui.year); for(let m=0;m<12;m++) colTotals[m]+=v[m]||0; });
+  rows.push(['Total', ...colTotals, colTotals.reduce((s,v)=>s+v,0)]);
+  return rows;
 }
 
-/* =========================================================
-   PPh BADAN (TAHUNAN) — simplified estimator using Pasal 31E
-   ========================================================= */
-function computeTaxBadan(year){
-  const input = getTaxBadanInput(year);
-  const peredaranBruto = kindTotal('pendapatan', year, 0, 11) + kindTotal('pendapatan_lain', year, 0, 11);
-  const labaUsaha = kindTotal('pendapatan', year, 0, 11) - kindTotal('biaya', year, 0, 11);
-  const labaKomersial = labaUsaha + kindTotal('pendapatan_lain', year, 0, 11) - kindTotal('biaya_lain', year, 0, 11);
-  const pkpFiskal = labaKomersial + (input.koreksiPositif||0) - (input.koreksiNegatif||0);
-
-  const BATAS_FASILITAS = 4800000000;
-  const BATAS_ATAS = 50000000000;
-  const TARIF_NORMAL = 0.22;
-  let pphTerutang, keterangan;
-  if(pkpFiskal<=0){
-    pphTerutang = 0; keterangan = 'Tidak ada PPh terutang (rugi/nihil fiskal).';
-  } else if(peredaranBruto <= BATAS_FASILITAS){
-    pphTerutang = pkpFiskal * (TARIF_NORMAL/2);
-    keterangan = 'Seluruh PKP mendapat fasilitas Pasal 31E (tarif efektif 11%) karena peredaran bruto ≤ Rp4,8 miliar.';
-  } else if(peredaranBruto <= BATAS_ATAS){
-    const bagianFasilitas = (BATAS_FASILITAS/peredaranBruto) * pkpFiskal;
-    const bagianNormal = pkpFiskal - bagianFasilitas;
-    pphTerutang = bagianFasilitas*(TARIF_NORMAL/2) + bagianNormal*TARIF_NORMAL;
-    keterangan = 'Sebagian PKP mendapat fasilitas Pasal 31E (proporsional), sisanya tarif 22%.';
-  } else {
-    pphTerutang = pkpFiskal * TARIF_NORMAL;
-    keterangan = 'Tarif normal 22% (peredaran bruto di atas Rp50 miliar).';
-  }
-
-  const totalKredit = (input.kreditPihakLain||0) + (input.angsuranDisetor||0);
-  const kurangLebihBayar = pphTerutang - totalKredit;
-  const angsuranBerikutnya = Math.max(0, pphTerutang - (input.kreditPihakLain||0)) / 12;
-
-  return { input, peredaranBruto, labaKomersial, pkpFiskal, pphTerutang, keterangan, totalKredit, kurangLebihBayar, angsuranBerikutnya };
-}
-
-function pphBadanSection(){
-  const c = computeTaxBadan(ui.year);
-  return `
-    <div class="panel">
-      <h2>PPh Badan (Tahunan) — Estimasi</h2>
-      <div style="font-size:12px;color:var(--ink-faint);margin:-8px 0 16px;">
-        Dihitung otomatis dari Laba Rugi ${ui.year} memakai aturan fasilitas Pasal 31E. Ini estimasi bantu hitung, bukan pengganti SPT resmi — mohon dicocokkan dengan konsultan/akuntan pajak Anda.
-      </div>
-
-      <div class="rline"><span class="l">Peredaran Bruto (Total Pendapatan)</span><span class="v">${fmtRp(c.peredaranBruto)}</span></div>
-      <div class="rline"><span class="l">Laba (Rugi) Bersih Sebelum Pajak (Komersial)</span><span class="v">${fmtRp(c.labaKomersial)}</span></div>
-
-      <div class="addrow-form" style="margin:14px 0;flex-wrap:wrap;">
-        <div style="flex:1;min-width:200px;">
-          <label style="font-size:11px;font-weight:600;color:var(--ink-soft);text-transform:uppercase;">Koreksi Fiskal Positif</label>
-          <input type="text" inputmode="numeric" class="tb-input" data-field="koreksiPositif" value="${fmtNum(c.input.koreksiPositif)}" style="width:100%;padding:8px 10px;border:1px solid var(--line-strong);border-radius:6px;margin-top:4px;background:#fff;font-family:'IBM Plex Mono',monospace;text-align:right;">
-        </div>
-        <div style="flex:1;min-width:200px;">
-          <label style="font-size:11px;font-weight:600;color:var(--ink-soft);text-transform:uppercase;">Koreksi Fiskal Negatif</label>
-          <input type="text" inputmode="numeric" class="tb-input" data-field="koreksiNegatif" value="${fmtNum(c.input.koreksiNegatif)}" style="width:100%;padding:8px 10px;border:1px solid var(--line-strong);border-radius:6px;margin-top:4px;background:#fff;font-family:'IBM Plex Mono',monospace;text-align:right;">
-        </div>
-      </div>
-
-      <div class="rline total"><span>Penghasilan Kena Pajak (Fiskal)</span><span>${fmtRp(c.pkpFiskal)}</span></div>
-      <div class="emptynote" style="margin:6px 0 0;">${c.keterangan}</div>
-      <div class="rline grand"><span>PPh Terutang</span><span class="v neg">${fmtRp(c.pphTerutang)}</span></div>
-
-      <div class="grp" style="margin-top:20px;">Kredit Pajak</div>
-      <div class="addrow-form" style="margin:10px 0;flex-wrap:wrap;">
-        <div style="flex:1;min-width:200px;">
-          <label style="font-size:11px;font-weight:600;color:var(--ink-soft);text-transform:uppercase;">PPh Dipotong/Dipungut Pihak Lain</label>
-          <input type="text" inputmode="numeric" class="tb-input" data-field="kreditPihakLain" value="${fmtNum(c.input.kreditPihakLain)}" style="width:100%;padding:8px 10px;border:1px solid var(--line-strong);border-radius:6px;margin-top:4px;background:#fff;font-family:'IBM Plex Mono',monospace;text-align:right;">
-        </div>
-        <div style="flex:1;min-width:200px;">
-          <label style="font-size:11px;font-weight:600;color:var(--ink-soft);text-transform:uppercase;">Angsuran PPh 25 Sudah Disetor</label>
-          <input type="text" inputmode="numeric" class="tb-input" data-field="angsuranDisetor" value="${fmtNum(c.input.angsuranDisetor)}" style="width:100%;padding:8px 10px;border:1px solid var(--line-strong);border-radius:6px;margin-top:4px;background:#fff;font-family:'IBM Plex Mono',monospace;text-align:right;">
-        </div>
-      </div>
-      <div class="rline total"><span>Total Kredit Pajak</span><span>${fmtRp(c.totalKredit)}</span></div>
-
-      <div class="rline grand"><span>PPh ${c.kurangLebihBayar>=0?'Kurang':'Lebih'} Bayar</span><span class="v ${c.kurangLebihBayar>=0?'neg':'pos'}">${fmtRp(Math.abs(c.kurangLebihBayar))}</span></div>
-
-      <div class="grp" style="margin-top:20px;">Estimasi Angsuran PPh 25 Tahun Berikutnya</div>
-      <div class="rline"><span class="l">Per bulan ((PPh Terutang − Kredit Dipotong Pihak Lain) ÷ 12)</span><span class="v">${fmtRp(c.angsuranBerikutnya)}</span></div>
-    </div>
-  `;
-}
-
-function bindPphBadanInputs(){
-  document.querySelectorAll('.tb-input').forEach(inp=>{
-    inp.addEventListener('focus', e=> e.target.select());
-    inp.addEventListener('blur', e=>{
-      setTaxBadanField(ui.year, e.target.dataset.field, parseNum(e.target.value));
-      viewPajak();
-    });
-    inp.addEventListener('keydown', e=>{ if(e.key==='Enter') e.target.blur(); });
-  });
+function exportPajakXlsx(type){
+  const meta = PAJAK_META[type];
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(buildPajakRows(type));
+  ws['!cols'] = [{wch:30}, ...MONTHS.map(()=>({wch:13})), {wch:15}];
+  XLSX.utils.book_append_sheet(wb, ws, meta.label.slice(0,31));
+  XLSX.writeFile(wb, `Laporan-${meta.label.replace(/\s+/g,'-')}-${ui.year}.xlsx`);
+  toast('File Excel diunduh');
 }
 
 function viewPajak(){
+  if(PAJAK_META[ui.pajakTab].isForm){ viewPajakSpt(); return; }
   const main = document.getElementById('main');
-  const total21 = taxAccounts(PPH21_RE).reduce((s,a)=>s+sumRange(a.id,ui.year,0,11),0);
-  const total26 = taxAccounts(PPH26_RE).reduce((s,a)=>s+sumRange(a.id,ui.year,0,11),0);
+  const type = ui.pajakTab;
+  const meta = PAJAK_META[type];
+  const accs = taxAccounts(type);
+  const colTotals = new Array(12).fill(0);
+  accs.forEach(a=>{ const v = getVals(a.id, ui.year); for(let m=0;m<12;m++) colTotals[m]+=v[m]||0; });
+  const grandTotal = colTotals.reduce((s,v)=>s+v,0);
 
   main.innerHTML = `
     <div class="sticky-head">
       <div class="topline" style="margin-bottom:14px;">
-        <div><h1>Laporan Pajak</h1><div class="desc">PPh Pasal 21, PPh Pasal 26, dan estimasi PPh Badan tahunan</div></div>
-        ${yearSwitcher()}
+        <div><h1>Laporan Pajak</h1><div class="desc">Rekap bulanan PPh yang dipotong / disetor</div></div>
+        <div class="controls no-print">
+          ${yearSwitcher()}
+          <button class="btn primary" id="btn-pajak-export">${ICONS.download} Export Excel</button>
+          <button class="btn" id="btn-pajak-print">${ICONS.print} Cetak</button>
+        </div>
       </div>
-      <div class="controls no-print" style="margin-bottom:0;">
-        <button class="btn primary" id="btn-pajak-export">${ICONS.download} Export Excel</button>
-        <button class="btn" id="btn-pajak-pdf">${ICONS.doc} Simpan sebagai PDF</button>
-        <button class="btn" id="btn-pajak-print">${ICONS.print} Cetak</button>
+
+      <div class="kindtabs no-print" id="pajaktabs" style="margin-bottom:0;">
+        ${Object.keys(PAJAK_META).map(k=>`
+          <button data-k="${k}" class="${ui.pajakTab===k?'active':''}">${PAJAK_META[k].label}</button>
+        `).join('')}
       </div>
+    </div>
+
+    ${type==='pph25' ? `
+    <div class="panel hint" style="background:var(--gold-bg);border:1px solid var(--gold);color:var(--ink);margin-bottom:16px;padding:12px 16px;font-size:12px;">
+      <b>Catatan:</b> Sebagian akun di pembukuan ini masih memakai nama lama "PPh 26" untuk pos angsuran bulanan PPh Badan.
+      Kode e-Billing yang benar untuk pos ini adalah <b>411126 (PPh Pasal 25 Badan)</b>, bukan 411127 (PPh Pasal 26 yang sebenarnya,
+      untuk pembayaran ke Wajib Pajak Luar Negeri). Dikonfirmasi oleh SPT Tahunan Badan 2025 (angsuran Pasal 25 tahun 2026 =
+      Rp 6.505.355/bulan, cocok dengan bukti billing Agustus 2026).
+    </div>
+    ` : ''}
+    ${type==='pph29' ? `
+    <div class="panel hint" style="background:var(--gold-bg);border:1px solid var(--gold);color:var(--ink);margin-bottom:16px;padding:12px 16px;font-size:12px;">
+      <b>Catatan:</b> PPh Pasal 29 adalah kurang bayar tahunan (PPh Terutang dikurangi seluruh kredit pajak &amp; angsuran PPh 25
+      sepanjang tahun). Wajib dilunasi <b>sebelum SPT Tahunan Badan disampaikan</b> — batas akhir SPT Tahunan Badan adalah
+      akhir bulan ke-4 setelah tahun pajak berakhir.
+    </div>
+    ` : ''}
+    ${type==='sewa' ? `
+    <div class="panel hint" style="background:var(--gold-bg);border:1px solid var(--gold);color:var(--ink);margin-bottom:16px;padding:12px 16px;font-size:12px;">
+      <b>Catatan:</b> Sewa tanah/bangunan dikenakan <b>PPh Final Pasal 4 ayat (2)</b> tarif 10% dari nilai bruto sewa
+      (kode e-Billing 411128) — final, bukan PPh Pasal 23 (yang tarifnya 2% dan objeknya sewa selain tanah/bangunan).
+    </div>
+    ` : ''}
+
+    <div class="cardrow">
+      <div class="kpi"><div class="lbl">Total ${meta.label} Tahun ${ui.year}</div><div class="val neg">${fmtRp(grandTotal)}</div><div class="sub">${meta.desc}</div></div>
+      <div class="kpi"><div class="lbl">Jumlah Akun Terkait</div><div class="val">${accs.length}</div><div class="sub">akun cocok dengan "${meta.label}"</div></div>
+    </div>
+
+    <div class="panel" style="padding:0;">
+      <div style="padding:18px 22px 14px;display:flex;justify-content:space-between;align-items:center;">
+        <h2>Rekap Bulanan ${meta.label} — ${ui.year}</h2>
+      </div>
+      <div id="pajak-addrow-slot" style="padding:0 22px;"></div>
+      ${accs.length===0 ? `
+      <div class="empty-state" style="padding-bottom:30px;">
+        <h3>Belum ada akun ${meta.label}</h3>
+        <p>Belum ditemukan akun dengan nama yang cocok. Tambahkan akun baru khusus ${meta.label}, atau ganti nama akun yang sudah ada di menu Data &amp; Input agar mengandung kata "${meta.label}".</p>
+        <button class="btn primary" id="btn-pajak-add" style="margin-top:8px;">${ICONS.plus} Tambah Akun ${meta.label}</button>
+      </div>
+      ` : `
+      <div class="table-scroll">
+        <table class="ledger">
+          <thead><tr>
+            <th>Akun</th>
+            ${MONTHS.map(m=>`<th>${m}</th>`).join('')}
+            <th>Total</th>
+          </tr></thead>
+          <tbody>
+            ${accs.map(a=>renderPajakRow(a)).join('')}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td style="text-align:left;">Total ${meta.label}</td>
+              ${colTotals.map(v=>`<td class="num" style="text-align:right;padding:10px 8px;">${fmtNum(v)}</td>`).join('')}
+              <td class="num" style="text-align:right;padding:10px 8px;">${fmtNum(grandTotal)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      `}
+    </div>
+    <div class="panel hint" style="font-size:12px;color:var(--ink-faint);">
+      Klik sel angka untuk mengubah nilai bulanan — data ini adalah akun yang sama dengan yang ada di menu Data &amp; Input, hanya disaring khusus untuk ${meta.label}.
+    </div>
+  `;
+
+  bindYearSwitcher(viewPajak);
+  document.getElementById('pajaktabs').querySelectorAll('button').forEach(b=>{
+    b.addEventListener('click', ()=>{ ui.pajakTab = b.dataset.k; viewPajak(); });
+  });
+  document.getElementById('btn-pajak-export').addEventListener('click', ()=> exportPajakXlsx(type));
+  document.getElementById('btn-pajak-print').addEventListener('click', ()=> window.print());
+
+  const addBtn = document.getElementById('btn-pajak-add');
+  if(addBtn){
+    addBtn.addEventListener('click', ()=>{
+      const slot = document.getElementById('pajak-addrow-slot');
+      slot.innerHTML = `
+        <div class="addrow-form">
+          <input type="text" id="pajak-new-name" value="${escapeHtml(meta.suggestName)}" placeholder="Nama akun">
+          <button class="btn primary" id="pajak-new-save">Simpan</button>
+          <button class="btn ghost" id="pajak-new-cancel">Batal</button>
+        </div>
+      `;
+      document.getElementById('pajak-new-name').focus();
+      document.getElementById('pajak-new-cancel').addEventListener('click', ()=>{ slot.innerHTML=''; });
+      document.getElementById('pajak-new-save').addEventListener('click', ()=>{
+        const name = document.getElementById('pajak-new-name').value.trim();
+        if(!name){ toast('Nama akun tidak boleh kosong'); return; }
+        const id = uid();
+        state.accounts.push({id, name, kind:'biaya'});
+        state.values[id] = { [ui.year]: new Array(12).fill(0) };
+        scheduleSave();
+        toast('Akun ditambahkan');
+        viewPajak();
+      });
+    });
+  }
+
+  main.querySelectorAll('input.cell').forEach(inp=>{
+    inp.addEventListener('focus', (e)=>{ e.target.select(); });
+    inp.addEventListener('blur', (e)=>{
+      const id = e.target.dataset.acc;
+      const m = parseInt(e.target.dataset.m);
+      const n = parseNum(e.target.value);
+      setVal(id, ui.year, m, n);
+      scheduleSave();
+      rerenderPreserveScroll(viewPajak);
+    });
+    inp.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.target.blur(); } });
+  });
+}
+
+/* =========================================================
+   VIEW: LAPORAN PAJAK — SPT TAHUNAN BADAN (form ringkasan)
+   ========================================================= */
+function sptField(label, key, opts){
+  opts = opts || {};
+  const s = getSpt(ui.year);
+  const val = s[key];
+  if(opts.text){
+    return `
+      <div class="rline" style="align-items:center;">
+        <span class="l">${label}</span>
+        <input type="text" class="spt-field" data-key="${key}" data-text="1" value="${escapeHtml(val||'')}"
+          style="text-align:right;border:1px solid var(--line-strong);border-radius:4px;padding:4px 8px;font-family:inherit;font-size:13px;width:220px;">
+      </div>`;
+  }
+  return `
+    <div class="rline" style="align-items:center;">
+      <span class="l">${label}</span>
+      <input type="text" inputmode="numeric" class="spt-field num" data-key="${key}" value="${val?fmtNum(val):''}" placeholder="0"
+        style="text-align:right;border:1px solid var(--line-strong);border-radius:4px;padding:4px 8px;font-family:'IBM Plex Mono',monospace;font-size:13px;width:220px;">
+    </div>`;
+}
+
+function viewPajakSpt(){
+  const main = document.getElementById('main');
+  const meta = PAJAK_META['spt'];
+  const s = getSpt(ui.year);
+  const kurangBayar = sptKurangBayar(ui.year);
+  const angsuranBerikutnya = sptAngsuranTahunBerikutnya(ui.year);
+
+  main.innerHTML = `
+    <div class="sticky-head">
+      <div class="topline" style="margin-bottom:14px;">
+        <div><h1>Laporan Pajak</h1><div class="desc">Rekap bulanan PPh yang dipotong / disetor</div></div>
+        <div class="controls no-print">
+          ${yearSwitcher()}
+          <button class="btn primary" id="btn-pajak-export">${ICONS.download} Export Excel</button>
+          <button class="btn" id="btn-pajak-print">${ICONS.print} Cetak</button>
+        </div>
+      </div>
+
+      <div class="kindtabs no-print" id="pajaktabs" style="margin-bottom:0;">
+        ${Object.keys(PAJAK_META).map(k=>`
+          <button data-k="${k}" class="${ui.pajakTab===k?'active':''}">${PAJAK_META[k].label}</button>
+        `).join('')}
+      </div>
+    </div>
+
+    <div class="panel hint" style="background:var(--gold-bg);border:1px solid var(--gold);color:var(--ink);margin-bottom:16px;padding:12px 16px;font-size:12px;">
+      <b>Catatan:</b> Isi angka-angka di bawah sesuai SPT Tahunan Badan yang sudah dilaporkan untuk tahun pajak ${ui.year}
+      (mengikuti Induk SPT Bagian D–G). Penghasilan Kena Pajak sudah dibulatkan ke bawah dalam ribuan penuh sesuai
+      ketentuan DJP — jumlah ini bisa sedikit berbeda dari Laba (Rugi) Kena Pajak Fiskal di Laba Rugi (selisih pembulatan, bukan kesalahan).
+      Baris "PPh Kurang/Lebih Bayar" dan "Angsuran PPh 25 Tahun Berikutnya" dihitung otomatis.
     </div>
 
     <div class="cardrow">
-      <div class="kpi"><div class="lbl">Total PPh Pasal 21 (${ui.year})</div><div class="val neg">${fmtRp(total21)}</div><div class="sub">Setahun</div></div>
-      <div class="kpi"><div class="lbl">Total PPh Pasal 26 (${ui.year})</div><div class="val neg">${fmtRp(total26)}</div><div class="sub">Setahun</div></div>
+      <div class="kpi"><div class="lbl">Penghasilan Kena Pajak (PKP)</div><div class="val">${fmtRp(s.pkp)}</div><div class="sub">Tahun Pajak ${ui.year}</div></div>
+      <div class="kpi"><div class="lbl">PPh Terutang</div><div class="val neg">${fmtRp(s.pphTerutang)}</div><div class="sub">${escapeHtml(s.tarifKeterangan||'')}</div></div>
+      <div class="kpi"><div class="lbl">PPh Kurang/(Lebih) Bayar — Ps.29</div><div class="val ${kurangBayar>=0?'neg':'pos'}">${fmtRp(kurangBayar)}</div><div class="sub">Terutang − kredit − angsuran − STP</div></div>
+      <div class="kpi"><div class="lbl">Angsuran PPh 25 Tahun Berikutnya</div><div class="val">${fmtRp(angsuranBerikutnya)}</div><div class="sub">per bulan, (Terutang − kredit pihak lain) / 12</div></div>
     </div>
 
-    ${taxSection('PPh Pasal 21', PPH21_RE)}
-    ${taxSection('PPh Pasal 26', PPH26_RE)}
-    ${pphBadanSection()}
+    <div class="panel report" style="max-width:640px;">
+      <div class="rtitle"><h2>Ringkasan SPT Tahunan Badan</h2><div class="period">Tahun Pajak ${ui.year}</div></div>
+
+      <div class="grp">Perhitungan PPh Terutang</div>
+      ${sptField('Penghasilan Neto Fiskal Sebelum Fasilitas', 'pkpSebelumFasilitas')}
+      ${sptField('Penghasilan Kena Pajak (PKP)', 'pkp')}
+      ${sptField('Keterangan Tarif / Fasilitas', 'tarifKeterangan', {text:true})}
+      ${sptField('PPh Terutang', 'pphTerutang')}
+
+      <div class="grp">Pengurang / Kredit Pajak</div>
+      ${sptField('Kredit Pajak Dipotong/Dipungut Pihak Lain (PPh 23, dll)', 'kreditPihakLain')}
+      ${sptField('Angsuran PPh Pasal 25 Sepanjang Tahun', 'angsuranPph25Setahun')}
+      ${sptField('STP PPh Pasal 25 (Pokok)', 'stpPph25')}
+      <div class="rline total"><span>PPh Kurang/(Lebih) Bayar — Pasal 29</span><span class="${kurangBayar>=0?'neg':'pos'}">${fmtRp(kurangBayar)}</span></div>
+
+      <div class="grp">Angsuran PPh 25 Tahun Berikutnya</div>
+      <div class="rline"><span class="l">PPh Dibayar Sendiri (Terutang − Kredit Pihak Lain)</span><span class="v">${fmtRp((s.pphTerutang||0)-(s.kreditPihakLain||0))}</span></div>
+      <div class="rline grand"><span>Angsuran per Bulan</span><span class="v">${fmtRp(angsuranBerikutnya)}</span></div>
+
+      <div class="grp">Status Pelaporan</div>
+      ${sptField('Status SPT', 'statusSpt', {text:true})}
+      ${sptField('Tanggal Terima SPT (BPE)', 'tanggalTerima', {text:true})}
+    </div>
+    <div class="panel hint" style="font-size:12px;color:var(--ink-faint);">
+      Klik kotak angka/teks untuk mengubah nilai. Data ini disimpan per tahun pajak dan dipakai sebagai dasar proyeksi di tab "PPh 25 Badan".
+    </div>
   `;
-  bindYearSwitcher(viewPajak);
-  document.getElementById('btn-pajak-export').addEventListener('click', exportPajakXlsx);
-  document.getElementById('btn-pajak-pdf').addEventListener('click', ()=>{ toast('Pilih "Simpan sebagai PDF" pada jendela cetak'); window.print(); });
-  document.getElementById('btn-pajak-print').addEventListener('click', ()=> window.print());
-  bindPphBadanInputs();
-}
 
-function buildPajakRows(){
-  const rows = [['LAPORAN PAJAK PPh 21 & PPh 26', 'Tahun ' + ui.year], []];
-  [['PPh Pasal 21', PPH21_RE], ['PPh Pasal 26', PPH26_RE]].forEach(([label, regex])=>{
-    const accs = taxAccounts(regex);
-    rows.push([label.toUpperCase()]);
-    if(accs.length===0){
-      rows.push(['(belum ada akun yang cocok)']);
-    } else {
-      rows.push(['Akun', ...MONTHS.map(m=>m.toUpperCase()), 'TOTAL']);
-      const monthly = new Array(12).fill(0);
-      accs.forEach(a=>{
-        const vals = getVals(a.id, ui.year);
-        vals.forEach((v,i)=> monthly[i]+=v||0);
-        rows.push([a.name, ...vals, vals.reduce((s,v)=>s+v,0)]);
-      });
-      rows.push(['Total ' + label, ...monthly, monthly.reduce((s,v)=>s+v,0)]);
-    }
-    rows.push([]);
+  bindYearSwitcher(viewPajakSpt);
+  document.getElementById('pajaktabs').querySelectorAll('button').forEach(b=>{
+    b.addEventListener('click', ()=>{ ui.pajakTab = b.dataset.k; viewPajak(); });
   });
+  document.getElementById('btn-pajak-export').addEventListener('click', exportSptXlsx);
+  document.getElementById('btn-pajak-print').addEventListener('click', ()=> window.print());
 
-  const c = computeTaxBadan(ui.year);
-  rows.push(['PPH BADAN (TAHUNAN) — ESTIMASI']);
-  rows.push(['Peredaran Bruto', c.peredaranBruto]);
-  rows.push(['Laba Bersih Sebelum Pajak (Komersial)', c.labaKomersial]);
-  rows.push(['Koreksi Fiskal Positif', c.input.koreksiPositif]);
-  rows.push(['Koreksi Fiskal Negatif', c.input.koreksiNegatif]);
-  rows.push(['Penghasilan Kena Pajak (Fiskal)', c.pkpFiskal]);
-  rows.push(['PPh Terutang', c.pphTerutang]);
-  rows.push(['PPh Dipotong/Dipungut Pihak Lain', c.input.kreditPihakLain]);
-  rows.push(['Angsuran PPh 25 Sudah Disetor', c.input.angsuranDisetor]);
-  rows.push(['Total Kredit Pajak', c.totalKredit]);
-  rows.push([(c.kurangLebihBayar>=0?'PPh Kurang Bayar':'PPh Lebih Bayar'), Math.abs(c.kurangLebihBayar)]);
-  rows.push(['Estimasi Angsuran PPh 25 Bulanan Tahun Berikutnya', c.angsuranBerikutnya]);
-  return rows;
+  main.querySelectorAll('.spt-field').forEach(inp=>{
+    inp.addEventListener('focus', (e)=>{ e.target.select(); });
+    inp.addEventListener('blur', (e)=>{
+      const key = e.target.dataset.key;
+      const row = getSpt(ui.year);
+      row[key] = e.target.dataset.text ? e.target.value.trim() : parseNum(e.target.value);
+      scheduleSave();
+      rerenderPreserveScroll(viewPajakSpt);
+    });
+    inp.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.target.blur(); } });
+  });
 }
 
-function exportPajakXlsx(){
+function buildSptRows(){
+  const s = getSpt(ui.year);
+  const kurangBayar = sptKurangBayar(ui.year);
+  const angsuranBerikutnya = sptAngsuranTahunBerikutnya(ui.year);
+  return [
+    ['RINGKASAN SPT TAHUNAN BADAN', 'Tahun Pajak ' + ui.year], [],
+    ['PERHITUNGAN PPh TERUTANG'],
+    ['Penghasilan Neto Fiskal Sebelum Fasilitas', s.pkpSebelumFasilitas],
+    ['Penghasilan Kena Pajak (PKP)', s.pkp],
+    ['Keterangan Tarif/Fasilitas', s.tarifKeterangan],
+    ['PPh Terutang', s.pphTerutang], [],
+    ['PENGURANG / KREDIT PAJAK'],
+    ['Kredit Pajak Dipotong/Dipungut Pihak Lain', s.kreditPihakLain],
+    ['Angsuran PPh Pasal 25 Sepanjang Tahun', s.angsuranPph25Setahun],
+    ['STP PPh Pasal 25 (Pokok)', s.stpPph25],
+    ['PPh Kurang/(Lebih) Bayar - Pasal 29', kurangBayar], [],
+    ['ANGSURAN PPh 25 TAHUN BERIKUTNYA'],
+    ['PPh Dibayar Sendiri', (s.pphTerutang||0)-(s.kreditPihakLain||0)],
+    ['Angsuran per Bulan', angsuranBerikutnya], [],
+    ['STATUS PELAPORAN'],
+    ['Status SPT', s.statusSpt],
+    ['Tanggal Terima SPT (BPE)', s.tanggalTerima],
+  ];
+}
+function exportSptXlsx(){
   const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet(buildPajakRows());
-  ws['!cols'] = [{wch:28}, ...MONTHS.map(()=>({wch:13})), {wch:14}];
-  XLSX.utils.book_append_sheet(wb, ws, 'Pajak PPh21-26');
-  XLSX.writeFile(wb, `Laporan-Pajak-PPh21-26-${ui.year}.xlsx`);
+  const ws = XLSX.utils.aoa_to_sheet(buildSptRows());
+  ws['!cols'] = [{wch:42},{wch:20}];
+  XLSX.utils.book_append_sheet(wb, ws, 'SPT Tahunan Badan');
+  XLSX.writeFile(wb, `SPT-Tahunan-Badan-${ui.year}.xlsx`);
   toast('File Excel diunduh');
 }
 
@@ -1551,13 +2006,9 @@ async function viewIO(){
     </div>
 
     <div class="panel">
-      <h2>Cadangan Data (JSON)</h2>
-      <p style="color:var(--ink-soft);font-size:13px;margin:0 0 14px;">Unduh seluruh data (semua tahun, semua akun, dan daftar pengguna login) sebagai satu file cadangan — sebagai jaring pengaman di luar Firebase, gratis tanpa perlu upgrade paket.</p>
-      <div class="controls">
-        <button class="btn" id="btn-export-json">${ICONS.download} Unduh Backup JSON</button>
-        <label class="btn" for="file-import-json">${ICONS.upload} Pulihkan dari Backup</label>
-        <input type="file" id="file-import-json" accept=".json" style="display:none;">
-      </div>
+      <h2>Perbaiki Duplikat Akun 2026</h2>
+      <p style="color:var(--ink-soft);font-size:13px;margin:0 0 14px;">Menghapus 6 akun duplikat hasil Import Excel sebelumnya (PAM, PLN, PPh 21, PPh26 Badan perbulan, Biaya Admin.Bank, Sertifikat ISO 9001 : 2015 / By.Pengobatan) dan mengisi ulang akun aslinya dengan nilai Januari–Agustus 2026 yang benar sesuai file Excel Anda. Klik sekali saja.</p>
+      <button class="btn primary" id="btn-fix-dupes-2026">${ICONS.edit} Perbaiki Sekarang</button>
     </div>
 
     <div class="panel">
@@ -1569,79 +2020,44 @@ async function viewIO(){
 
   document.getElementById('btn-export-xlsx').addEventListener('click', exportXlsx);
   document.getElementById('file-import').addEventListener('change', handleImportXlsx);
-  document.getElementById('btn-export-json').addEventListener('click', exportFullBackupJson);
-  document.getElementById('file-import-json').addEventListener('change', handleImportJsonBackup);
   document.getElementById('btn-clear-all').addEventListener('click', confirmClearAll);
+  document.getElementById('btn-fix-dupes-2026').addEventListener('click', fixDuplicateAccounts2026);
 }
 
-async function exportFullBackupJson(){
-  toast('Menyiapkan backup...');
-  const users = await loadAuthList();
-  const backup = {
-    exportedAt: new Date().toISOString(),
-    ledger: state,
-    auth: { users }
-  };
-  const blob = new Blob([JSON.stringify(backup, null, 2)], {type:'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `buku-kas-backup-${new Date().toISOString().slice(0,10)}.json`;
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
-  toast('Backup JSON diunduh');
-}
-
-function handleImportJsonBackup(e){
-  const file = e.target.files[0];
-  if(!file){ return; }
-  const reader = new FileReader();
-  reader.onload = (ev)=>{
-    let data;
-    try{
-      data = JSON.parse(ev.target.result);
-      if(!data.ledger || !Array.isArray(data.ledger.accounts)) throw new Error('format tidak dikenali');
-    }catch(err){
-      toast('Gagal membaca file backup — format tidak dikenali');
-      return;
+/* ---------- Perbaikan sekali-pakai: akun duplikat 2026 hasil Import Excel ---------- */
+function fixDuplicateAccounts2026(){
+  const YEAR = 2026;
+  // [namaAsli, [Jan..Agt yang benar], [namaDuplikatUntukDihapus, ...]]
+  const fixes = [
+    ['Pembayaran PAM', [600000,295434,420434,316000,1230868,500000,315934,450000], ['PAM']],
+    ['Pembayaran Daya PLN', [2815954,2279178,2074847,1737786,2703655,2453866,2513629,2705489], ['PLN']],
+    ['PPh Ps.21', [4589525,0,0,0,0,0,0,0], ['PPh 21']],
+    ['PPh26 Badan Per Bulan', [6082533,6082533,6082533,6505355,6505355,6505355,6505355,6505355], ['PPh26 Badan perbulan']],
+    ['Biaya Admin Bank', [121118,396428,166358,135461,159477,182796,212438,224607], ['Biaya Admin.Bank']],
+    ['Sertifikat ISO 9001:2015', [0,7000000,0,0,0,0,0,0], ['Sertifikat ISO 9001 : 2015']],
+    ['Biaya Pengobatan', [0,0,0,0,0,0,0,0], ['By.Pengobatan']],
+  ];
+  let fixedCount=0, removedCount=0;
+  fixes.forEach(([origName, vals8, dupNames])=>{
+    const orig = state.accounts.find(a=>a.name.trim().toLowerCase()===origName.toLowerCase());
+    if(orig){
+      const full12 = vals8.concat([0,0,0,0]); // Sep-Des belum ada datanya
+      state.values[orig.id] = state.values[orig.id] || {};
+      state.values[orig.id][YEAR] = full12;
+      fixedCount++;
     }
-    confirmRestoreBackup(data);
-  };
-  reader.readAsText(file);
-  e.target.value = '';
-}
-
-function confirmRestoreBackup(data){
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-bg';
-  const dateLabel = data.exportedAt ? new Date(data.exportedAt).toLocaleString('id-ID') : 'tidak diketahui';
-  const userCount = (data.auth && Array.isArray(data.auth.users)) ? data.auth.users.length : 0;
-  overlay.innerHTML = `
-    <div class="modal">
-      <h3>Pulihkan dari backup ini?</h3>
-      <p>File dibuat pada <b>${escapeHtml(dateLabel)}</b>, berisi <b>${data.ledger.accounts.length} akun</b>${userCount?` dan ${userCount} pengguna login`:''}. Seluruh data saat ini (termasuk yang di cloud) akan <b>ditimpa</b> dengan isi file ini. Tindakan ini tidak bisa dibatalkan.</p>
-      <div class="row-actions">
-        <button class="btn ghost" id="restore-cancel">Batal</button>
-        <button class="btn danger" id="restore-confirm">Pulihkan</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-  overlay.querySelector('#restore-cancel').addEventListener('click', ()=> overlay.remove());
-  overlay.addEventListener('click', (e)=>{ if(e.target===overlay) overlay.remove(); });
-  overlay.querySelector('#restore-confirm').addEventListener('click', async ()=>{
-    state = data.ledger;
-    if(!state.taxBadan) state.taxBadan = {};
-    await doSave();
-    if(data.auth && Array.isArray(data.auth.users) && data.auth.users.length>0){
-      await saveAuthList(data.auth.users);
-    }
-    overlay.remove();
-    toast('Data berhasil dipulihkan');
-    const ys = yearsAvailable();
-    ui.year = ys.length ? ys[ys.length-1] : new Date().getFullYear();
-    render();
+    dupNames.forEach(dn=>{
+      const dup = state.accounts.find(a=>a.name.trim().toLowerCase()===dn.toLowerCase());
+      if(dup){
+        state.accounts = state.accounts.filter(a=>a.id!==dup.id);
+        delete state.values[dup.id];
+        removedCount++;
+      }
+    });
   });
+  scheduleSave();
+  toast(`Selesai: ${fixedCount} akun diperbaiki, ${removedCount} akun duplikat dihapus`);
+  render();
 }
 
 /* ---------- Kelola Pengguna (accessed from the sidebar, near Keluar) ---------- */
@@ -1853,6 +2269,76 @@ function exportXlsx(){
     rows.push([a.name, KIND_META[a.kind].label, ...vals, vals.reduce((s,v)=>s+v,0)]);
   });
   const ws1 = XLSX.utils.aoa_to_sheet(rows);
+
+  /* Kolom TOTAL diisi rumus SUM (bukan angka statis) supaya file hasil
+     export ini bisa dipakai lagi sebagai template di tahun berikutnya:
+     tinggal timpa nominal bulanannya (JAN..DES), TOTAL otomatis terhitung
+     ulang oleh Excel. Ini tidak mengganggu Import Excel, karena proses
+     import hanya membaca kolom Akun & kolom bulan, kolom TOTAL diabaikan. */
+  const totalColIdx = header.length - 1;
+  const firstMonthColIdx = 2;
+  const lastMonthColIdx = totalColIdx - 1;
+  const totalColLetter = XLSX.utils.encode_col(totalColIdx);
+  const firstMonthLetter = XLSX.utils.encode_col(firstMonthColIdx);
+  const lastMonthLetter = XLSX.utils.encode_col(lastMonthColIdx);
+  for(let r=1; r<rows.length; r++){
+    const excelRow = r+1; // baris 1 = header
+    const ref = totalColLetter + excelRow;
+    ws1[ref] = { t:'n', f: `SUM(${firstMonthLetter}${excelRow}:${lastMonthLetter}${excelRow})`, v: rows[r][totalColIdx] };
+  }
+
+  /* Tambahan: blok "Rangkuman" (Pendapatan / Pengeluaran per bulan / L/R)
+     persis seperti panel Rangkuman di halaman Data & Input, memakai rumus
+     SUMIF yang merujuk ke kolom Jenis & Akun di atas — bukan angka statis.
+     Jadi kalau nominal bulanan akun diubah/diisi ulang (mis. untuk tahun
+     berikutnya), baris Rangkuman ini ikut otomatis terhitung ulang. */
+  const accStart = 2;                 // baris excel akun pertama
+  const accEnd = rows.length;         // baris excel akun terakhir
+  const titleRow = accEnd + 2;
+  const pendRow = accEnd + 3;
+  const pengRow = accEnd + 4;
+  const lrRow = accEnd + 5;
+
+  // nilai cache (supaya tetap tampil benar walau dibuka di aplikasi yang
+  // tidak auto-recalculate formula, mis. sebagian pembaca file offline)
+  const pendapatanAccs = accountsByKind('pendapatan');
+  const pendArr=[], pengArr=[], lrArr=[];
+  for(let m=0;m<12;m++){
+    const p = pendapatanAccs.reduce((s,a)=>s+sumRange(a.id,ui.year,m,m),0);
+    const b = pengeluaranTotal(ui.year, m);
+    pendArr.push(p); pengArr.push(b); lrArr.push(p-b);
+  }
+
+  XLSX.utils.sheet_add_aoa(ws1, [
+    ['RANGKUMAN'],
+    ['Pendapatan ' + ui.year],
+    ['Pengeluaran per bulan'],
+    ['L/R'],
+  ], { origin: { r: titleRow-1, c: 0 } });
+
+  for(let mi=0; mi<12; mi++){
+    const colLetter = XLSX.utils.encode_col(firstMonthColIdx+mi);
+    ws1[colLetter+pendRow] = {
+      t:'n', v: pendArr[mi],
+      f: `SUMIF($B$${accStart}:$B$${accEnd},"Pendapatan",${colLetter}$${accStart}:${colLetter}$${accEnd})`
+    };
+    ws1[colLetter+pengRow] = {
+      t:'n', v: pengArr[mi],
+      f: `SUMIF($B$${accStart}:$B$${accEnd},"Biaya",${colLetter}$${accStart}:${colLetter}$${accEnd})`
+        + `+SUMIF($A$${accStart}:$A$${accEnd},"Pinjaman Diterima",${colLetter}$${accStart}:${colLetter}$${accEnd})`
+        + `+SUMIF($A$${accStart}:$A$${accEnd},"DP Aset Alih Kepemilikan Ruko",${colLetter}$${accStart}:${colLetter}$${accEnd})`
+    };
+    ws1[colLetter+lrRow] = { t:'n', v: lrArr[mi], f: `${colLetter}${pendRow}-${colLetter}${pengRow}` };
+  }
+  ws1[totalColLetter+pendRow] = { t:'n', v: pendArr.reduce((s,v)=>s+v,0), f: `SUM(${firstMonthLetter}${pendRow}:${lastMonthLetter}${pendRow})` };
+  ws1[totalColLetter+pengRow] = { t:'n', v: pengArr.reduce((s,v)=>s+v,0), f: `SUM(${firstMonthLetter}${pengRow}:${lastMonthLetter}${pengRow})` };
+  ws1[totalColLetter+lrRow]   = { t:'n', v: lrArr.reduce((s,v)=>s+v,0),   f: `SUM(${firstMonthLetter}${lrRow}:${lastMonthLetter}${lrRow})` };
+
+  // perluas jangkauan sheet supaya baris tambahan ikut tersimpan/terbaca
+  const range = XLSX.utils.decode_range(ws1['!ref']);
+  range.e.r = Math.max(range.e.r, lrRow-1);
+  ws1['!ref'] = XLSX.utils.encode_range(range);
+
   XLSX.utils.book_append_sheet(wb, ws1, 'Rekap ' + ui.year);
 
   // Sheet 2: Laba Rugi (current mode/period)
@@ -1920,7 +2406,7 @@ function handleImportXlsx(e){
         });
         while(vals.length<12) vals.push(0);
 
-        let acc = state.accounts.find(a=>a.name.toLowerCase()===name.toLowerCase());
+        let acc = state.accounts.find(a=>normalizeAccName(a.name)===normalizeAccName(name));
         if(!acc){
           const kind = /pendapat/i.test(name) ? 'pendapatan' : 'biaya';
           acc = {id: uid(), name, kind};
@@ -2011,7 +2497,6 @@ function renderLoginScreen(hasAccount, errorMsg){
       if(match){
         session.loggedIn = true;
         session.username = match.username;
-        saveSession(match.username);
         startApp();
       } else {
         renderLoginScreen(true, 'Username atau kata sandi salah.');
@@ -2077,16 +2562,20 @@ function renderSetupScreen(isReset){
 }
 
 async function startApp(){
+  saveSession(session.username);
   showShell(true);
   const loaded = await loadState();
   if(loaded){
     state = loaded;
+    if(!state.sptBadan) state.sptBadan = {};
+    if(ensureDefaultAccounts()) scheduleSave(); // susulkan akun baku yang belum ada di data lama
     const ys = yearsAvailable();
     ui.year = ys.length ? ys[ys.length-1] : new Date().getFullYear();
   } else {
     state = seedState();
     ui.year = 2025;
   }
+  attachRealtimeSync();
   render();
 }
 
@@ -2096,7 +2585,7 @@ async function startApp(){
 function render(){
   renderNav();
   const logoutBtn = document.getElementById('btn-logout');
-  if(logoutBtn) logoutBtn.onclick = ()=>{ session.loggedIn = false; renderLoginScreen(true); };
+  if(logoutBtn) logoutBtn.onclick = ()=>{ session.loggedIn = false; clearSession(); renderLoginScreen(true); };
   const manageUsersBtn = document.getElementById('btn-manage-users');
   if(manageUsersBtn) manageUsersBtn.onclick = showManageUsersModal;
   const mbMoreBtn = document.getElementById('mb-more');
@@ -2111,6 +2600,19 @@ function render(){
 
 async function init(){
   const list = await loadAuthList();
+  const saved = loadSession();
+  // Kalau ada sesi tersimpan dan username-nya masih terdaftar (belum dihapus
+  // lewat menu Kelola Pengguna), langsung masuk tanpa minta login ulang.
+  if(saved){
+    const stillValid = list.some(u=> u.username.toLowerCase() === saved.username.toLowerCase());
+    if(stillValid){
+      session.loggedIn = true;
+      session.username = list.find(u=> u.username.toLowerCase() === saved.username.toLowerCase()).username;
+      startApp();
+      return;
+    }
+    clearSession();
+  }
   renderLoginScreen(list.length>0);
 }
 init();
