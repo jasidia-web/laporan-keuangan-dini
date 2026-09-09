@@ -2287,6 +2287,58 @@ function exportXlsx(){
     ws1[ref] = { t:'n', f: `SUM(${firstMonthLetter}${excelRow}:${lastMonthLetter}${excelRow})`, v: rows[r][totalColIdx] };
   }
 
+  /* Tambahan: blok "Rangkuman" (Pendapatan / Pengeluaran per bulan / L/R)
+     persis seperti panel Rangkuman di halaman Data & Input, memakai rumus
+     SUMIF yang merujuk ke kolom Jenis & Akun di atas — bukan angka statis.
+     Jadi kalau nominal bulanan akun diubah/diisi ulang (mis. untuk tahun
+     berikutnya), baris Rangkuman ini ikut otomatis terhitung ulang. */
+  const accStart = 2;                 // baris excel akun pertama
+  const accEnd = rows.length;         // baris excel akun terakhir
+  const titleRow = accEnd + 2;
+  const pendRow = accEnd + 3;
+  const pengRow = accEnd + 4;
+  const lrRow = accEnd + 5;
+
+  // nilai cache (supaya tetap tampil benar walau dibuka di aplikasi yang
+  // tidak auto-recalculate formula, mis. sebagian pembaca file offline)
+  const pendapatanAccs = accountsByKind('pendapatan');
+  const pendArr=[], pengArr=[], lrArr=[];
+  for(let m=0;m<12;m++){
+    const p = pendapatanAccs.reduce((s,a)=>s+sumRange(a.id,ui.year,m,m),0);
+    const b = pengeluaranTotal(ui.year, m);
+    pendArr.push(p); pengArr.push(b); lrArr.push(p-b);
+  }
+
+  XLSX.utils.sheet_add_aoa(ws1, [
+    ['RANGKUMAN'],
+    ['Pendapatan ' + ui.year],
+    ['Pengeluaran per bulan'],
+    ['L/R'],
+  ], { origin: { r: titleRow-1, c: 0 } });
+
+  for(let mi=0; mi<12; mi++){
+    const colLetter = XLSX.utils.encode_col(firstMonthColIdx+mi);
+    ws1[colLetter+pendRow] = {
+      t:'n', v: pendArr[mi],
+      f: `SUMIF($B$${accStart}:$B$${accEnd},"Pendapatan",${colLetter}$${accStart}:${colLetter}$${accEnd})`
+    };
+    ws1[colLetter+pengRow] = {
+      t:'n', v: pengArr[mi],
+      f: `SUMIF($B$${accStart}:$B$${accEnd},"Biaya",${colLetter}$${accStart}:${colLetter}$${accEnd})`
+        + `+SUMIF($A$${accStart}:$A$${accEnd},"Pinjaman Diterima",${colLetter}$${accStart}:${colLetter}$${accEnd})`
+        + `+SUMIF($A$${accStart}:$A$${accEnd},"DP Aset Alih Kepemilikan Ruko",${colLetter}$${accStart}:${colLetter}$${accEnd})`
+    };
+    ws1[colLetter+lrRow] = { t:'n', v: lrArr[mi], f: `${colLetter}${pendRow}-${colLetter}${pengRow}` };
+  }
+  ws1[totalColLetter+pendRow] = { t:'n', v: pendArr.reduce((s,v)=>s+v,0), f: `SUM(${firstMonthLetter}${pendRow}:${lastMonthLetter}${pendRow})` };
+  ws1[totalColLetter+pengRow] = { t:'n', v: pengArr.reduce((s,v)=>s+v,0), f: `SUM(${firstMonthLetter}${pengRow}:${lastMonthLetter}${pengRow})` };
+  ws1[totalColLetter+lrRow]   = { t:'n', v: lrArr.reduce((s,v)=>s+v,0),   f: `SUM(${firstMonthLetter}${lrRow}:${lastMonthLetter}${lrRow})` };
+
+  // perluas jangkauan sheet supaya baris tambahan ikut tersimpan/terbaca
+  const range = XLSX.utils.decode_range(ws1['!ref']);
+  range.e.r = Math.max(range.e.r, lrRow-1);
+  ws1['!ref'] = XLSX.utils.encode_range(range);
+
   XLSX.utils.book_append_sheet(wb, ws1, 'Rekap ' + ui.year);
 
   // Sheet 2: Laba Rugi (current mode/period)
