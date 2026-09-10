@@ -546,6 +546,43 @@ async function sha256Hex(text){
   }
   return h1.toString(16).padStart(8,'0') + h2.toString(16).padStart(8,'0');
 }
+/* ---------- Enkripsi data akun login (username + hash kata sandi) ----------
+   Aplikasi ini berjalan sepenuhnya di browser (tanpa server), jadi kunci di
+   bawah ini pada akhirnya tetap ada di kode sumber yang bisa dibaca siapa pun
+   yang membuka file index.html — ini BUKAN pengaman terhadap orang yang punya
+   akses ke kode aplikasi. Tujuannya: supaya username & hash kata sandi tidak
+   lagi terbaca polos kalau ada yang sekadar melihat isi dokumen di Firestore
+   console atau localStorage lewat DevTools browser, seperti sebelumnya —
+   yang tersimpan di sana sekarang cuma teks acak (AES-GCM). Kata sandi
+   sendiri tetap tidak pernah disimpan asli, hanya hash SHA-256-nya. */
+const AUTH_ENC_PASSPHRASE = 'buku-kas-dini-auth-v1';
+let _authCryptoKey = null;
+function cryptoAvailable(){
+  return !!(window.crypto && window.crypto.subtle && window.isSecureContext !== false);
+}
+async function getAuthCryptoKey(){
+  if(_authCryptoKey) return _authCryptoKey;
+  const keyBytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(AUTH_ENC_PASSPHRASE));
+  _authCryptoKey = await crypto.subtle.importKey('raw', keyBytes, {name:'AES-GCM'}, false, ['encrypt','decrypt']);
+  return _authCryptoKey;
+}
+function bufToB64(buf){ return btoa(String.fromCharCode(...new Uint8Array(buf))); }
+function b64ToBuf(b64){ const bin = atob(b64); const arr = new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i); return arr.buffer; }
+async function encryptAuthList(list){
+  if(!cryptoAvailable()) throw new Error('SubtleCrypto tidak tersedia (perlu HTTPS)');
+  const key = await getAuthCryptoKey();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = new TextEncoder().encode(JSON.stringify(list));
+  const cipher = await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, data);
+  return { iv: bufToB64(iv), data: bufToB64(cipher) };
+}
+async function decryptAuthList(payload){
+  const key = await getAuthCryptoKey();
+  const iv = new Uint8Array(b64ToBuf(payload.iv));
+  const plain = await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, b64ToBuf(payload.data));
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+
 async function loadAuthList(){
   if(FIREBASE_ENABLED){
     try{
@@ -554,8 +591,15 @@ async function loadAuthList(){
         const snap = await fbDb.collection('buku_kas').doc('auth').get();
         if(snap.exists){
           const data = snap.data();
+          if(data && data.encUsers){
+            try{
+              const list = await decryptAuthList(data.encUsers);
+              localSet(AUTH_KEY, JSON.stringify({ enc:true, iv:data.encUsers.iv, data:data.encUsers.data })); // cache lokal (ikut terenkripsi)
+              return list;
+            }catch(e){ console.error('loadAuthList: gagal dekripsi data cloud', e); return []; }
+          }
           if(Array.isArray(data.users)){
-            localSet(AUTH_KEY, JSON.stringify(data.users)); // cache lokal untuk mode offline
+            saveAuthList(data.users); // data lama (belum terenkripsi) -> migrasi otomatis ke bentuk terenkripsi
             return data.users;
           }
         }
@@ -563,22 +607,41 @@ async function loadAuthList(){
       }
     }catch(e){ console.error('loadAuthList: gagal ambil dari cloud, pakai cache lokal', e); }
   }
+  return await loadAuthListLocal();
+}
+async function loadAuthListLocal(){
   const raw = localGet(AUTH_KEY);
   if(!raw) return [];
   try{
     const parsed = JSON.parse(raw);
-    if(Array.isArray(parsed)) return parsed;
+    if(parsed && parsed.enc && parsed.data && parsed.iv){
+      try{ return await decryptAuthList(parsed); }
+      catch(e){ console.error('loadAuthListLocal: gagal dekripsi cache lokal', e); return []; }
+    }
+    if(Array.isArray(parsed)){
+      saveAuthList(parsed); // cache lama (plaintext) -> migrasi ke bentuk terenkripsi
+      return parsed;
+    }
     if(parsed && parsed.username && parsed.hash) return [parsed]; // migrate old single-account format
     return [];
   }catch(e){ return []; }
 }
 async function saveAuthList(list){
-  localSet(AUTH_KEY, JSON.stringify(list)); // cache lokal selalu diperbarui
+  let enc = null;
+  try{ enc = await encryptAuthList(list); }
+  catch(e){ console.error('saveAuthList: enkripsi gagal, simpan tanpa enkripsi', e); }
+
+  localSet(AUTH_KEY, enc ? JSON.stringify({ enc:true, iv:enc.iv, data:enc.data }) : JSON.stringify(list));
+
   if(FIREBASE_ENABLED){
     try{
       const ok = await ensureFirebaseAuth();
       if(ok){
-        await fbDb.collection('buku_kas').doc('auth').set({ users: list });
+        if(enc){
+          await fbDb.collection('buku_kas').doc('auth').set({ encUsers: { iv:enc.iv, data:enc.data } });
+        }else{
+          await fbDb.collection('buku_kas').doc('auth').set({ users: list });
+        }
         return true;
       }
     }catch(e){
@@ -1989,6 +2052,16 @@ async function viewIO(){
     </div>
 
     <div class="panel">
+      <h2>Backup & Pulihkan Data</h2>
+      <p style="color:var(--ink-soft);font-size:13px;margin:0 0 14px;">Unduh cadangan lengkap seluruh data (semua akun, nominal semua tahun, dan SPT Badan) sebagai satu file .json. Simpan file ini di tempat aman (Google Drive/email/flashdisk) — kalau data di aplikasi suatu saat hilang atau salah terhapus, tinggal pulihkan lagi dari file ini.</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button class="btn primary" id="btn-backup-download">${ICONS.download} Unduh Backup (.json)</button>
+        <label class="btn ghost" for="file-backup-restore" style="cursor:pointer;">${ICONS.upload} Pulihkan dari Backup</label>
+        <input type="file" id="file-backup-restore" accept=".json,application/json" style="display:none;">
+      </div>
+    </div>
+
+    <div class="panel">
       <h2>Export ke Excel</h2>
       <p style="color:var(--ink-soft);font-size:13px;margin:0 0 14px;">Mengunduh file .xlsx berisi Rekap Tahun ${ui.year}, Laporan Laba Rugi, dan Neraca untuk periode yang sedang dipilih.</p>
       <button class="btn primary" id="btn-export-xlsx">${ICONS.download} Unduh Excel (${ui.year})</button>
@@ -2022,6 +2095,72 @@ async function viewIO(){
   document.getElementById('file-import').addEventListener('change', handleImportXlsx);
   document.getElementById('btn-clear-all').addEventListener('click', confirmClearAll);
   document.getElementById('btn-fix-dupes-2026').addEventListener('click', fixDuplicateAccounts2026);
+  document.getElementById('btn-backup-download').addEventListener('click', downloadBackup);
+  document.getElementById('file-backup-restore').addEventListener('change', handleRestoreBackup);
+}
+
+/* ---------- Backup & Pulihkan (file .json berisi seluruh state aplikasi) ---------- */
+function downloadBackup(){
+  const payload = {
+    app: 'buku-kas',
+    backupVersion: 1,
+    exportedAt: new Date().toISOString(),
+    state: state
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `backup-buku-kas-${new Date().toISOString().slice(0,10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  toast('Backup berhasil diunduh');
+}
+function handleRestoreBackup(e){
+  const file = e.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    let payload;
+    try{ payload = JSON.parse(ev.target.result); }
+    catch(err){ toast('File backup tidak valid (bukan JSON)'); e.target.value=''; return; }
+    const incoming = (payload && payload.state) ? payload.state : payload; // dukung juga file JSON polos berisi state langsung
+    if(!incoming || !Array.isArray(incoming.accounts) || typeof incoming.values !== 'object'){
+      toast('Struktur file backup tidak dikenali');
+      e.target.value=''; return;
+    }
+    confirmRestoreBackup(incoming, ()=>{ e.target.value=''; });
+  };
+  reader.readAsText(file);
+}
+function confirmRestoreBackup(incomingState, onDone){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-bg';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>Pulihkan dari backup?</h3>
+      <p>Seluruh data akun & nominal yang ada SAAT INI akan ditimpa dengan isi file backup ini. Tindakan ini tidak dapat dibatalkan.</p>
+      <div class="row-actions">
+        <button class="btn ghost" id="rb-cancel">Batal</button>
+        <button class="btn danger" id="rb-confirm">Pulihkan Sekarang</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  const close = ()=>{ overlay.remove(); if(onDone) onDone(); };
+  overlay.querySelector('#rb-cancel').addEventListener('click', close);
+  overlay.addEventListener('click', (e)=>{ if(e.target===overlay) close(); });
+  overlay.querySelector('#rb-confirm').addEventListener('click', async ()=>{
+    state = incomingState;
+    if(!state.sptBadan) state.sptBadan = {};
+    await doSave();
+    overlay.remove();
+    toast('Data berhasil dipulihkan dari backup');
+    if(onDone) onDone();
+    render();
+  });
 }
 
 /* ---------- Perbaikan sekali-pakai: akun duplikat 2026 hasil Import Excel ---------- */
